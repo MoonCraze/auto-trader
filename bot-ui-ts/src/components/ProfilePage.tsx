@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useWallet } from '../context/WalletContext';
 import type { OverallAnalytics, TokenAnalytics, HistoricalTrade } from '../types';
+import moment from 'moment-timezone';
 
 const API_BASE = 'http://localhost:8000';
 
@@ -54,7 +55,7 @@ const ProfilePage: React.FC = () => {
   };
 
   const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleString();
+    return moment(dateString).tz('Asia/Colombo').format('MMM DD, YYYY HH:mm:ss');
   };
 
   if (isLoading) {

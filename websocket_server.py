@@ -16,6 +16,7 @@ from sentiment_analyzer import check_sentiment
 from database import SessionLocal
 from auth import authenticate_wallet, register_synthetic_wallet
 
+# SSE_ENDPOINT = "https://helius.sarislabs.com/stream/coordinated"
 SSE_ENDPOINT = "http://localhost:5000/stream"
 
 # Multi-user state management
@@ -298,7 +299,7 @@ async def listen_for_tokens(raw_queue: asyncio.Queue, metadata: TokenMetadata):
                                     symbol = token_address[:4] + "..." + token_address[-4:]  # Default fallback
                                     try:
                                         async with aiohttp.ClientSession() as token_session:
-                                            token_endpoint = "https://psychic-train-69grw7p65wjjc4vxr-5000.app.github.dev/token"
+                                            token_endpoint = "https://special-robot-g4w6xrqq5jpx29vq6-5000.app.github.dev/token"
                                             async with token_session.get(f"{token_endpoint}/{token_address}", timeout=10) as token_response:
                                                 if token_response.status == 200:
                                                     content_type = token_response.headers.get('Content-Type', '')
