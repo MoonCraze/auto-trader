@@ -3,7 +3,7 @@ import asyncio
 
 
 SENTIMENT_ENDPOINT_URL = "https://aryan-spectrochemical-transperitoneally.ngrok-free.dev/rag/explain"
-TOKEN_INFO_ENDPOINT = "https://psychic-train-69grw7p65wjjc4vxr-5000.app.github.dev/token"
+TOKEN_INFO_ENDPOINT = "https://verbose-computing-machine-r4grwvx967vwfx6x6-5000.app.github.dev/token"
 MAX_RETRIES = 3
 INITIAL_RETRY_DELAY = 5
 

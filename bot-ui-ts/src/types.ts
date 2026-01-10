@@ -46,6 +46,7 @@ export interface VolumeData {
 export interface TokenInfo {
     address: string;
     symbol: string;
+    logo_url?: string;
 }
 
 export interface TradeSummary {

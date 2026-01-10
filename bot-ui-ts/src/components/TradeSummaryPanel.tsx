@@ -37,7 +37,19 @@ const TradeSummaryPanel: React.FC<TradeSummaryPanelProps> = ({ summaries, active
 
                     <li key={summary.token.address} className={`p-3 rounded-lg border-2 transition-all ${summary.token.address === activeTokenAddress ? 'border-blue-500 bg-gray-700/50' : 'border-transparent bg-gray-800/50'}`}>
                         <div className="flex justify-between items-center mb-1">
-                            <span className="font-bold text-lg truncate pr-2">{summary.token.symbol}</span>
+                            <div className="flex items-center gap-2 flex-1 min-w-0">
+                                {summary.token.logo_url ? (
+                                    <img 
+                                        src={summary.token.logo_url} 
+                                        alt={summary.token.symbol} 
+                                        className="w-6 h-6 rounded-full flex-shrink-0"
+                                        onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                                    />
+                                ) : (
+                                    <div className="w-6 h-6 rounded-full bg-gray-700 flex-shrink-0" />
+                                )}
+                                <span className="font-bold text-lg truncate">{summary.token.symbol}</span>
+                            </div>
                             <span className={getStatusChip(summary.status)}>{summary.status}</span>
                         </div>
                         <p className="text-xs text-gray-500 font-mono truncate">{summary.token.address}</p>

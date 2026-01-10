@@ -163,9 +163,19 @@ const TradingDashboard: React.FC = () => {
     return (
         <div className="bg-gray-900 text-white h-screen font-sans flex flex-col p-4">
             <header className="flex-shrink-0 flex justify-between items-center border-b border-gray-700 pb-3 mb-4">
-                <div>
-                    <h1 className="text-2xl font-bold">{activeSymbol} / SOL</h1>
-                    <p className="text-sm text-gray-400">Autonomous Trading Bot - Mission Control</p>
+                <div className="flex items-center gap-3">
+                    {activeTokenInfo?.logo_url && !isWaitingForFirstToken && (
+                        <img 
+                            src={activeTokenInfo.logo_url} 
+                            alt={activeSymbol} 
+                            className="w-12 h-12 rounded-full"
+                            onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                        />
+                    )}
+                    <div>
+                        <h1 className="text-2xl font-bold">{activeSymbol} / SOL</h1>
+                        <p className="text-sm text-gray-400">Autonomous Trading Bot - Mission Control</p>
+                    </div>
                 </div>
                 <div className="flex items-center gap-x-12">
                     <div className="text-right">

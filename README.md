@@ -2,6 +2,15 @@
 
 A sophisticated autonomous cryptocurrency trading bot with multi-user support, real-time analytics, and comprehensive trade tracking. Built with Python, React, TypeScript, and WebSocket for real-time communication.
 
+## 🔥 **NEW: Real OHLCV Data Integration**
+The system now uses **real 1-minute candlestick data** from GeckoTerminal API instead of synthetic data:
+- ✅ Real-time Solana token pool data
+- ✅ Historical candles (up to 1000 candles)
+- ✅ Automatic 1-minute polling
+- ✅ Live price updates for all active trades
+
+📖 **See [REAL_OHLCV_INTEGRATION.md](REAL_OHLCV_INTEGRATION.md) for detailed documentation**
+
 ## ✨ Features
 
 ### 🔐 **Authentication System**
@@ -11,7 +20,7 @@ A sophisticated autonomous cryptocurrency trading bot with multi-user support, r
 - Multi-user support with isolated trading sessions
 
 ### 📊 **Trading Dashboard**
-- Real-time candlestick charts with strategy overlays
+- Real-time candlestick charts with **live market data**
 - Live trade execution and monitoring
 - Portfolio tracking with P&L calculations
 - Market transaction feed
@@ -43,6 +52,7 @@ Comprehensive analytics dashboard with three sections:
 
 ### 🔄 **Real-Time Features**
 - WebSocket-based live updates
+- **Real OHLCV data from GeckoTerminal API**
 - Per-user state management
 - Shared token signals with independent execution
 - Automatic sentiment analysis

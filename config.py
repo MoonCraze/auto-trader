@@ -1,6 +1,11 @@
 # Database Configuration
 DATABASE_URL = "sqlite:///./trading_bot.db"  # SQLite for simplicity, can switch to PostgreSQL
 
+# Real OHLCV Data Configuration
+# Solana pool address for real-time 1-minute candle data from GeckoTerminal
+SOLANA_POOL_ADDRESS = "FFcYgSSgWHforA9rXXkA48p8YFoz8TSW85Jpo3CQHDyS"
+OHLCV_POLLING_INTERVAL = 60  # Poll every 60 seconds for new 1-minute candles
+
 # Portfolio and Risk Management
 INITIAL_CAPITAL_SOL = 50.0
 RISK_PER_TRADE_PERCENT = 0.02  # 2% of total capital per trade
