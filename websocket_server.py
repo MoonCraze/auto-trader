@@ -25,9 +25,10 @@ PORTFOLIO_MANAGERS = {}  # wallet_address -> PortfolioManager
 GLOBAL_MARKET_INDEX = []  # Shared market index data for idle display
 USER_LOCKS = {}  # wallet_address -> asyncio.Lock to serialize trades per user
 
-# Real OHLCV data fetcher (singleton)
-OHLCV_FETCHER: RealOHLCVFetcher = None
-OHLCV_METADATA = {}  # Store token pair metadata
+# Real OHLCV data fetchers (per pair address)
+OHLCV_FETCHERS = {}  # pair_address -> RealOHLCVFetcher
+OHLCV_METADATA = {}  # pair_address -> metadata
+DEFAULT_FETCHER: RealOHLCVFetcher = None  # Fallback for idle display
 
 
 def user_has_active_or_pending(app_state):
@@ -184,6 +185,33 @@ def format_candle_from_dict(candle_dict):
     volume = {'time': timestamp, 'value': candle_dict['volume'], 'color': volume_color}
     return candle, volume
 
+async def get_or_create_ohlcv_fetcher(pair_address: str) -> RealOHLCVFetcher:
+    """Get existing fetcher or create new one for a pair address"""
+    if pair_address in OHLCV_FETCHERS:
+        return OHLCV_FETCHERS[pair_address]
+    
+    print(f"Creating new OHLCV fetcher for pair: {pair_address}")
+    fetcher = RealOHLCVFetcher(pair_address)
+    
+    # Fetch initial data
+    candles, metadata = await fetcher.fetch_initial_data()
+    
+    if candles:
+        OHLCV_FETCHERS[pair_address] = fetcher
+        OHLCV_METADATA[pair_address] = metadata
+        print(f"✅ OHLCV fetcher created: {len(candles)} candles loaded for {metadata['base_token']['symbol']}/{metadata['quote_token']['symbol']}")
+        
+        # Start polling for this pair
+        asyncio.create_task(fetcher.start_polling(
+            lambda candle, pa=pair_address: handle_new_ohlcv_candle(candle, pa), 
+            config.OHLCV_POLLING_INTERVAL
+        ))
+        
+        return fetcher
+    else:
+        print(f"⚠️  Failed to fetch OHLCV data for pair: {pair_address}")
+        return None
+
 async def process_single_token(token_info, wallet_address, index, sentiment_result=None):
     """Process a token trade for a specific user using real OHLCV data"""
     if wallet_address not in PORTFOLIO_MANAGERS or wallet_address not in USER_STATES:
@@ -198,16 +226,57 @@ async def process_single_token(token_info, wallet_address, index, sentiment_resu
     
     print(f"[{token_info['symbol']}] Using real OHLCV data for trading...")
     
-    # Safety check: ensure OHLCV fetcher is initialized
-    if OHLCV_FETCHER is None:
-        print(f"[{token_info['symbol']}] ERROR: OHLCV fetcher not initialized. Skipping trade.")
+    # Check if pair_address is available
+    pair_address = token_info.get('pair_address')
+    
+    if not pair_address:
+        print(f"[{token_info['symbol']}] ERROR: No pair address available. Cannot fetch OHLCV data.")
         APP_STATE["trade_summaries"][index].update({'status': 'Failed', 'pnl': 0.0})
         await broadcast_to_user(wallet_address, json.dumps({'type': 'TRADE_SUMMARY_UPDATE', 'data': {'summaries': APP_STATE["trade_summaries"]}}))
+        
+        # Send message to UI to show "pair address not found" banner
+        error_package = {
+            'type': 'NEW_TRADE_STARTING',
+            'data': {
+                'token_info': token_info,
+                'error': 'PAIR_ADDRESS_NOT_FOUND',
+                'candles': [],
+                'volumes': [],
+                'bot_trades': [],
+                'strategy_state': None,
+            }
+        }
+        await broadcast_to_user(wallet_address, json.dumps(error_package))
+        return
+    
+    # Get or create OHLCV fetcher for this pair
+    fetcher = await get_or_create_ohlcv_fetcher(pair_address)
+    
+    if fetcher is None:
+        print(f"[{token_info['symbol']}] ERROR: Failed to initialize OHLCV fetcher for pair {pair_address}")
+        APP_STATE["trade_summaries"][index].update({'status': 'Failed', 'pnl': 0.0})
+        await broadcast_to_user(wallet_address, json.dumps({'type': 'TRADE_SUMMARY_UPDATE', 'data': {'summaries': APP_STATE["trade_summaries"]}}))
+        
+        # Send error message to UI
+        error_package = {
+            'type': 'NEW_TRADE_STARTING',
+            'data': {
+                'token_info': token_info,
+                'error': 'OHLCV_FETCH_FAILED',
+                'candles': [],
+                'volumes': [],
+                'bot_trades': [],
+                'strategy_state': None,
+            }
+        }
+        await broadcast_to_user(wallet_address, json.dumps(error_package))
         return
     
     # Get all historical candles and prepare for display
-    all_candles = OHLCV_FETCHER.get_all_candles()
+    all_candles = fetcher.get_all_candles()
     print(f"[{token_info['symbol']}] Fetched {len(all_candles)} candles from OHLCV fetcher")
+
+    print(f"[{token_info['symbol']}] [{token_info['address']}] Pair: {pair_address}")
     
     if not all_candles or len(all_candles) < 20:
         print(f"[{token_info['symbol']}] Insufficient OHLCV data (need 20, have {len(all_candles)}). Skipping.")
@@ -267,7 +336,7 @@ async def process_single_token(token_info, wallet_address, index, sentiment_resu
         'trade_pnl': current_total - initial_capital,
         'overall_pnl': current_total - initial_capital
     }
-    APP_STATE.update({ "active_token_info": token_info, "initial_candles": initial_candles, "initial_volumes": initial_volumes, "bot_trades": [bot_trade], "strategy_state": strategy_state, "portfolio": portfolio_status, "strategy": strategy, "executor": executor, "initial_capital": initial_capital, "initial_sol_balance": initial_sol_balance })
+    APP_STATE.update({ "active_token_info": token_info, "initial_candles": initial_candles, "initial_volumes": initial_volumes, "bot_trades": [bot_trade], "strategy_state": strategy_state, "portfolio": portfolio_status, "strategy": strategy, "executor": executor, "initial_capital": initial_capital, "initial_sol_balance": initial_sol_balance, "pair_address": pair_address })
     APP_STATE["trade_summaries"][index]['status'] = 'Active'
     await broadcast_to_user(wallet_address, json.dumps({'type': 'TRADE_SUMMARY_UPDATE', 'data': {'summaries': APP_STATE["trade_summaries"]}}))
     new_trade_package = { 'type': 'NEW_TRADE_STARTING', 'data': { 'token_info': token_info, 'candles': initial_candles, 'volumes': initial_volumes, 'bot_trades': [bot_trade], 'strategy_state': strategy_state, 'portfolio': portfolio_status } }
@@ -276,17 +345,22 @@ async def process_single_token(token_info, wallet_address, index, sentiment_resu
     print(f"[{token_info['symbol']}] Trade active. Waiting for real-time 1-minute updates...")
     # Trade is now active and will be updated by the real-time polling loop in handle_new_ohlcv_candle()
 
-async def handle_new_ohlcv_candle(candle_dict):
-    """Handle new OHLCV candle for all active trades"""
+async def handle_new_ohlcv_candle(candle_dict, pair_address: str):
+    """Handle new OHLCV candle for all active trades using this pair"""
     current_price = candle_dict['close']
     candle, volume = format_candle_from_dict(candle_dict)
     
-    # Update all users who have active trades
+    # Update all users who have active trades with this pair address
     for wallet_address in list(USER_STATES.keys()):
         APP_STATE = USER_STATES[wallet_address]
         
         # Skip if no active token
         if not APP_STATE.get("active_token_info"):
+            continue
+        
+        # Check if this user's active trade uses this pair address
+        user_pair_address = APP_STATE.get("pair_address")
+        if user_pair_address != pair_address:
             continue
         
         token_info = APP_STATE["active_token_info"]
@@ -372,28 +446,36 @@ async def listen_for_tokens(raw_queue: asyncio.Queue, metadata: TokenMetadata):
                                 data = json.loads(line[len('data:'):].strip())
                                 token_address = data.get("tokenAddress")
                                 if token_address:
-                                    # Fetch the actual token name from the API
+                                    # Fetch the actual token name and pair address from the API
                                     symbol = token_address[:4] + "..." + token_address[-4:]  # Default fallback
                                     logo_url = ""
+                                    pair_address = None  # NEW: Get pair address for OHLCV data
+                                    
                                     try:
                                         async with aiohttp.ClientSession() as token_session:
-                                            token_endpoint = "https://verbose-computing-machine-r4grwvx967vwfx6x6-5000.app.github.dev/token"
-                                            async with token_session.get(f"{token_endpoint}/{token_address}", timeout=10) as token_response:
+                                            async with token_session.get(f"{config.TOKEN_ENDPOINT_BASE}/{token_address}", timeout=20) as token_response:
                                                 if token_response.status == 200:
                                                     content_type = token_response.headers.get('Content-Type', '')
                                                     if 'application/json' in content_type:
                                                         token_data = await token_response.json()
                                                         symbol = token_data.get('symbol', symbol)
                                                         logo_url = token_data.get('logo_url', '')
-                                                        print(f"Resolved token name: {symbol}")
+                                                        pair_address = token_data.get('pair_address')  # Get pair address
+                                                        print(f"Resolved token: {symbol} | Pair Address: {pair_address or 'NOT FOUND'}")
+    
                                     except Exception as e:
-                                        print(f"Could not fetch token name for {token_address}: {e}", )
+                                        print(f"Could not fetch token data for {token_address}: {e}")
                                     
                                     # Also try to get logo from metadata if API doesn't provide it
                                     if not logo_url:
                                         logo_url = metadata.get_logo_url(token_address)
                                     
-                                    token_info = {"address": token_address, "symbol": symbol, "logo_url": logo_url}
+                                    token_info = {
+                                        "address": token_address, 
+                                        "symbol": symbol, 
+                                        "logo_url": logo_url,
+                                        "pair_address": pair_address  # Include pair address
+                                    }
                                     
                                     print(f"Raw signal received for {symbol}. Pushing to screening queue.")
                                     await raw_queue.put(token_info)
@@ -460,8 +542,8 @@ async def process_trade_queue(trade_queue: asyncio.Queue):
                 pending_requeue = True
                 continue
 
-            # sentiment_result = await check_sentiment(token_info['address'], token_info['symbol'])
-            sentiment_result = {'score': 70, 'mentions': random.randint(0, 500), 'token_name': token_info['symbol']}
+            sentiment_result = await check_sentiment(token_info['address'], token_info['symbol'])
+            # sentiment_result = {'score': 70, 'mentions': random.randint(0, 500), 'token_name': token_info['symbol']}
 
 
             if sentiment_result and sentiment_result.get('score', 0) > 60:
@@ -501,17 +583,18 @@ async def stream_background_data():
     """Stream background market data using real OHLCV data"""
     print("Starting background market data stream with real OHLCV...")
     
-    # Initialize with historical data from fetcher
-    all_candles = OHLCV_FETCHER.get_all_candles()
-    for candle in all_candles[-200:]:  # Last 200 candles for initial display
-        formatted_candle, _ = format_candle_from_dict(candle)
-        GLOBAL_MARKET_INDEX.append(formatted_candle)
+    # Initialize with historical data from default fetcher (if available)
+    if DEFAULT_FETCHER and DEFAULT_FETCHER.all_candles:
+        all_candles = DEFAULT_FETCHER.get_all_candles()
+        for candle in all_candles[-200:]:  # Last 200 candles for initial display
+            formatted_candle, _ = format_candle_from_dict(candle)
+            GLOBAL_MARKET_INDEX.append(formatted_candle)
     
     while True:
         # Get current price and create a pseudo-candle for idle display
         # This updates between 1-minute intervals to keep UI responsive
-        if OHLCV_FETCHER.all_candles:
-            last_real_candle = OHLCV_FETCHER.all_candles[-1]
+        if DEFAULT_FETCHER and DEFAULT_FETCHER.all_candles:
+            last_real_candle = DEFAULT_FETCHER.all_candles[-1]
             last_price = last_real_candle['close']
             # Small random variation for display purposes
             new_price = last_price * (1 + random.normalvariate(0, 0.001))
@@ -531,32 +614,56 @@ async def stream_background_data():
         
         await asyncio.sleep(2)
 
-async def initialize_ohlcv_fetcher():
-    """Initialize the real OHLCV data fetcher"""
-    global OHLCV_FETCHER, OHLCV_METADATA
+async def initialize_default_fetcher():
+    """Initialize the default OHLCV fetcher for idle display"""
+    global DEFAULT_FETCHER
     
-    print(f"Initializing real OHLCV fetcher for pool: {config.SOLANA_POOL_ADDRESS}")
-    OHLCV_FETCHER = get_ohlcv_fetcher(config.SOLANA_POOL_ADDRESS)
+    print(f"Initializing default OHLCV fetcher for idle display: {config.SOLANA_POOL_ADDRESS}")
+    DEFAULT_FETCHER = RealOHLCVFetcher(config.SOLANA_POOL_ADDRESS)
     
     # Fetch initial historical data
-    candles, metadata = await OHLCV_FETCHER.fetch_initial_data()
-    OHLCV_METADATA = metadata
+    candles, metadata = await DEFAULT_FETCHER.fetch_initial_data()
     
     if not candles:
-        print("⚠️  WARNING: No initial OHLCV data loaded. Trading may not work correctly.")
+        print("⚠️  WARNING: No initial OHLCV data loaded for default fetcher.")
     else:
-        print(f"✅ OHLCV data initialized: {len(candles)} candles loaded")
+        print(f"✅ Default OHLCV fetcher initialized: {len(candles)} candles loaded")
         print(f"   Trading pair: {metadata['base_token']['symbol']}/{metadata['quote_token']['symbol']}")
     
-    # Start polling for new candles
-    asyncio.create_task(OHLCV_FETCHER.start_polling(handle_new_ohlcv_candle, config.OHLCV_POLLING_INTERVAL))
+    # Start polling for new candles (for idle display only)
+    asyncio.create_task(DEFAULT_FETCHER.start_polling(
+        lambda candle: asyncio.create_task(asyncio.sleep(0)),  # No-op callback
+        config.OHLCV_POLLING_INTERVAL
+    ))
+
+async def initialize_default_fetcher():
+    """Initialize the default OHLCV fetcher for idle display"""
+    global DEFAULT_FETCHER
+    
+    print(f"Initializing default OHLCV fetcher for idle display: {config.SOLANA_POOL_ADDRESS}")
+    DEFAULT_FETCHER = RealOHLCVFetcher(config.SOLANA_POOL_ADDRESS)
+    
+    # Fetch initial historical data
+    candles, metadata = await DEFAULT_FETCHER.fetch_initial_data()
+    
+    if not candles:
+        print("⚠️  WARNING: No initial OHLCV data loaded for default fetcher.")
+    else:
+        print(f"✅ Default OHLCV fetcher initialized: {len(candles)} candles loaded")
+        print(f"   Trading pair: {metadata['base_token']['symbol']}/{metadata['quote_token']['symbol']}")
+    
+    # Start polling for new candles (for idle display only)
+    asyncio.create_task(DEFAULT_FETCHER.start_polling(
+        lambda candle: asyncio.create_task(asyncio.sleep(0)),  # No-op callback
+        config.OHLCV_POLLING_INTERVAL
+    ))
 
 async def main():
     print("=== Starting Autonomous Trading System ===")
     
-    # Step 1: Initialize OHLCV fetcher first (CRITICAL - must complete before trading)
-    print("Step 1: Initializing real OHLCV data fetcher...")
-    await initialize_ohlcv_fetcher()
+    # Step 1: Initialize default OHLCV fetcher for idle display
+    print("Step 1: Initializing default OHLCV data fetcher...")
+    await initialize_default_fetcher()
     
     # Step 2: Initialize token metadata
     print("Step 2: Initializing token metadata...")
@@ -572,6 +679,7 @@ async def main():
     server = websockets.serve(register, "localhost", 8765)
     
     print("✅ All systems initialized. Trading system is ready!")
+    print("📊 Each token will use its own pair address for OHLCV data")
     print("=" * 50)
     
     # Start all async tasks

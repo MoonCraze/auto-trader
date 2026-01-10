@@ -1,6 +1,9 @@
 # Database Configuration
 DATABASE_URL = "sqlite:///./trading_bot.db"  # SQLite for simplicity, can switch to PostgreSQL
 
+# Token Metadata API Configuration
+TOKEN_ENDPOINT_BASE = "https://orange-happiness-v6vgw754rp4p3prjp-5000.app.github.dev/token"
+
 # Real OHLCV Data Configuration
 # Solana pool address for real-time 1-minute candle data from GeckoTerminal
 SOLANA_POOL_ADDRESS = "FFcYgSSgWHforA9rXXkA48p8YFoz8TSW85Jpo3CQHDyS"

@@ -3,6 +3,8 @@
 ## Overview
 This system has been updated to use **real 1-minute OHLCV (candlestick) data** from the GeckoTerminal API instead of synthetic data. The data is fetched via RESTful GET endpoints and polled every 60 seconds.
 
+**IMPORTANT UPDATE**: System now uses **per-token pair addresses** instead of a fixed pool address. Each token gets its own OHLCV fetcher based on its trading pair address retrieved from the token metadata endpoint.
+
 ## Changes Made
 
 ### 1. New Module: `real_ohlcv_fetcher.py`
@@ -94,7 +96,41 @@ OHLCV_POLLING_INTERVAL = 60  # Seconds (60 = 1 minute)
 - Each new 1-minute candle triggers strategy checks (stop-loss, take-profit)
 - Updates are broadcast to all connected users instantly
 
+## Architecture: Per-Token Pair Addresses
+
+### Previous Issue (Fixed)
+- **Problem**: All tokens used a single fixed `SOLANA_POOL_ADDRESS`
+- **Symptom**: Trades finished immediately with 0 P&L, no candles displayed
+- **Root Cause**: Different tokens have different trading pairs on DEXs
+
+### Current Solution
+- **Dynamic Fetchers**: Each token gets its own OHLCV fetcher based on `pair_address`
+- **Source**: `pair_address` retrieved from token metadata endpoint
+- **Storage**: `OHLCV_FETCHERS = {}` dictionary maps pair_address → RealOHLCVFetcher
+- **Fallback**: `DEFAULT_FETCHER` for idle display when no trades active
+
+### Token Data Flow
+```python
+# 1. Fetch token metadata including pair_address
+token_data = requests.get(f"{TOKEN_ENDPOINT_BASE}/{token_address}").json()
+pair_address = token_data.get('pair_address')
+
+# 2. Create or retrieve fetcher for this pair
+fetcher = await get_or_create_ohlcv_fetcher(pair_address)
+
+# 3. Use pair-specific data for trading
+initial_candles = fetcher.get_all_candles()
+```
+
+### Error Handling
+- **Missing pair_address**: Shows error banner in UI ("Pair Address Not Found")
+- **API Failure**: Logs error and retries with exponential backoff
+- **Graceful Degradation**: System continues processing other tokens
+
 ### Multi-User Support
+- Each user trading different tokens sees their token's specific OHLCV data
+- Candle updates are filtered by pair_address to reach correct users
+- Multiple users can trade the same token (shared fetcher instance)
 - Each user's active trades are updated with new candles
 - Trades complete automatically when positions are closed
 - Users can reconnect and see full trade history

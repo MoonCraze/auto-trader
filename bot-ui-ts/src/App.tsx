@@ -69,6 +69,7 @@ const TradingDashboard: React.FC = () => {
     const [strategyState, setStrategyState] = useState<StrategyState | null>(null);
     const [botTrades, setBotTrades] = useState<BotTrade[]>([]);
     const [marketTrades, setMarketTrades] = useState<MarketTrade[]>([]);
+    const [chartError, setChartError] = useState<string | null>(null);  // NEW: Track chart errors
     const initialCapital = user?.initial_sol_balance ?? 50.0;
     const chartBootstrappedRef = useRef(false);
 
@@ -86,10 +87,24 @@ const TradingDashboard: React.FC = () => {
                     setLastCandle(null);
                     setLastVolume(null);
                     setMarketTrades([]);
+                    setChartError(null);  // Clear any previous errors
                     chartBootstrappedRef.current = false; // Reset bootstrap flag for new token
                     
                     // Then update token data
                     const tradeData = message.data;
+                    
+                    // Check for errors (pair address not found, etc.)
+                    if (tradeData.error) {
+                        setChartError(tradeData.error);
+                        setActiveTokenInfo(tradeData.token_info);
+                        setInitialCandles(null);
+                        setInitialVolume(null);
+                        setBotTrades([]);
+                        setStrategyState(null);
+                        setPortfolio(null);
+                        return;
+                    }
+                    
                     const newCandles = tradeData.candles || [];
                     const newVolumes = tradeData.volumes || [];
                     
@@ -237,7 +252,21 @@ const TradingDashboard: React.FC = () => {
                             </Card>
                         </div>
                         <div className="lg:col-span-3 bg-gray-800/50 rounded-lg p-2">
-                            {isWaitingForFirstToken ? (
+                            {chartError ? (
+                                <div className="flex items-center justify-center h-full rounded-lg border border-dashed border-red-500/40 bg-red-900/20 text-center px-6">
+                                    <div className="space-y-3 max-w-md">
+                                        <div className="text-5xl mb-4">⚠️</div>
+                                        <p className="text-lg font-semibold text-red-300">
+                                            {chartError === 'PAIR_ADDRESS_NOT_FOUND' ? 'Pair Address Not Found' : 'OHLCV Data Unavailable'}
+                                        </p>
+                                        <p className="text-sm text-gray-400">
+                                            {chartError === 'PAIR_ADDRESS_NOT_FOUND' 
+                                                ? 'Unable to locate trading pair information for this token. The token may not be listed on supported DEXs.'
+                                                : 'Failed to fetch OHLCV data for this token. Please check network connectivity or try another token.'}
+                                        </p>
+                                    </div>
+                                </div>
+                            ) : isWaitingForFirstToken ? (
                                 <div className="flex items-center justify-center h-full rounded-lg border border-dashed border-indigo-500/40 bg-slate-800/60 text-center px-6">
                                     <div className="space-y-3 max-w-md">
                                         <p className="text-lg font-semibold text-indigo-200">Awaiting first token signal</p>
