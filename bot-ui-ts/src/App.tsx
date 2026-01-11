@@ -58,7 +58,7 @@ const StrategyPanel: React.FC<{ state: StrategyState | null; currentPrice: numbe
 
 // Trading Dashboard Component (extracted from original App)
 const TradingDashboard: React.FC = () => {
-    const { isWsConnected, wsConnection, user } = useWallet();
+    const { isWsConnected, wsConnection, user, walletBalance } = useWallet();
     const [tradeSummaries, setTradeSummaries] = useState<TradeSummary[]>([]);
     const [activeTokenInfo, setActiveTokenInfo] = useState<TokenInfo | null>(null);
     const [initialCandles, setInitialCandles] = useState<Candle[] | null>(null);
@@ -70,7 +70,9 @@ const TradingDashboard: React.FC = () => {
     const [botTrades, setBotTrades] = useState<BotTrade[]>([]);
     const [marketTrades, setMarketTrades] = useState<MarketTrade[]>([]);
     const [chartError, setChartError] = useState<string | null>(null);  // NEW: Track chart errors
-    const initialCapital = user?.initial_sol_balance ?? 50.0;
+    // Use API balance values instead of synthetic database values
+    const initialCapital = user?.initial_balance_from_api ?? user?.current_balance ?? user?.initial_sol_balance ?? 50.0;
+    const currentWalletBalance = user?.current_balance ?? initialCapital;
     const chartBootstrappedRef = useRef(false);
 
     useEffect(() => {
@@ -165,10 +167,12 @@ const TradingDashboard: React.FC = () => {
     const tradePnl = portfolio?.trade_pnl ?? 0;
     const pnlColor = tradePnl >= 0 ? 'text-green-400' : 'text-red-400';
     const currentPrice = lastCandle?.close ?? 0;
-    const overallPnl = portfolio?.overall_pnl ?? tradeSummaries.reduce((acc, s) => acc + (s.status === 'Finished' ? s.pnl : 0), 0);
+    
+    // Calculate P&L from real API balance instead of synthetic portfolio values
+    const currentValue = currentWalletBalance;
+    const overallPnl = currentValue - initialCapital;
     const overallPnlColor = overallPnl >= 0 ? 'text-green-400' : 'text-red-400';
-    const overallPnlPercent = (overallPnl / initialCapital) * 100;
-    const currentWalletValue = portfolio?.total_value ?? (initialCapital + overallPnl);
+    const overallPnlPercent = initialCapital > 0 ? (overallPnl / initialCapital) * 100 : 0;
 
     const activeAddress = activeTokenInfo?.address || null;
     const activeSymbol = activeTokenInfo?.symbol || "SYSTEM";
@@ -216,7 +220,7 @@ const TradingDashboard: React.FC = () => {
                     <Card title="Overall Performance">
                         <div className="space-y-2 text-sm">
                             <p>Initial Wallet: <span className="font-mono text-gray-400 float-right">{initialCapital.toFixed(4)} SOL</span></p>
-                            <p>Current Value: <span className="font-mono text-white float-right">{currentWalletValue.toFixed(4)} SOL</span></p>
+                            <p>Current Value: <span className="font-mono text-white float-right">{currentValue.toFixed(4)} SOL</span></p>
                             <div className="border-t border-gray-700 my-2"></div>
                             <p>Total P&L: <span className={`font-mono float-right ${overallPnlColor}`}>{overallPnl >= 0 ? `+${overallPnl.toFixed(4)}` : overallPnl.toFixed(4)} SOL ({overallPnlPercent.toFixed(2)}%)</span></p>
                         </div>
@@ -355,7 +359,7 @@ const AppContent: React.FC = () => {
                     <div className="text-right">
                         <div className="text-xs text-gray-400">Balance</div>
                         <div className="text-sm font-semibold text-green-400">
-                            {user?.initial_sol_balance.toFixed(4)} SOL
+                            {user?.current_balance?.toFixed(4) ?? user?.initial_sol_balance.toFixed(4)} SOL
                         </div>
                     </div>
                     <button

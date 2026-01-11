@@ -87,17 +87,34 @@ export interface StrategyState {
     highest_price_seen: number;
 }
 
+// Demo Wallet Balance Types
+export interface WalletBalanceItem {
+    mint: string;
+    amount: string;
+    uiAmount: number;
+}
+
+export interface WalletBalance {
+    success: boolean;
+    wallet: string;
+    balances: WalletBalanceItem[];
+    total: number;
+}
+
 // Authentication & User Types
 export interface User {
     wallet_address: string;
-    initial_sol_balance: number;
+    initial_sol_balance: number; // From database (synthetic - ignore this)
     created_at: string;
+    current_balance?: number; // Current balance from demo API (uiAmount)
+    initial_balance_from_api?: number; // Initial balance from API on first login
 }
 
 export interface AuthState {
     isAuthenticated: boolean;
     user: User | null;
     walletAddress: string | null;
+    walletBalance: WalletBalance | null;
 }
 
 // Historical Trade Types

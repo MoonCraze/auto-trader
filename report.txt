@@ -1,0 +1,1183 @@
+\section{Autonomous Trading System – Policy, Execution and Risk Management}
+\label{chap:ats-eval}
+
+\subsection{Objectives and High-Level Design}
+
+The Autonomous Trading System (ATS) is the final on-chain actor in the proposed architecture. Whereas the Wallets Collecting Module, Trader Selection Framework (TSF), Wallet Tracking Module, and Sentiment Analysis Module focus on \emph{observing} and \emph{interpreting} the market, the ATS is responsible for \emph{acting} on this information by placing and managing real trades on Solana-based decentralised exchanges.
+
+At a conceptual level, the ATS receives a stream of enriched signals of the form
+\[
+    \big( i,\, \tau,\, C_{i}(\tau),\, G_{i}(\tau),\, z_{i}(\tau) \big),
+\]
+where $i$ is a token identifier, $C_{i}(\tau)$ is the raw coordination score, $G_{i}(\tau)$ is the sentiment-gated coordination score (Section~3.5.4), and $z_{i}(\tau)$ is a feature vector containing additional context (leader composition, sentiment scores, attention, regime labels, etc.). Based on these inputs, the ATS must decide whether to:
+
+\begin{itemize}
+    \item Ignore the signal and take no action.
+    \item Open a new position in token $i$.
+    \item Adjust an existing position (e.g., scale in, scale out, tighten stops).
+    \item Close a position partially or fully.
+\end{itemize}
+
+Crucially, the ATS is designed to be \emph{rule-based and transparent}. It does not attempt to learn an opaque trading policy from data; instead, it implements a configurable set of decision rules and risk limits that can be inspected, audited, and tuned by a human operator. This design choice aligns with the overall research goal: to investigate whether a pipeline that combines leader coordination, off-chain sentiment, and explicit risk controls can produce reasonable trading behaviour, without conflating this with the separate question of how to train an optimal policy.
+
+\subsubsection{Core Objectives of the ATS}
+
+The ATS is built around four core objectives:
+
+\begin{enumerate}
+    \item \textbf{Translate enriched signals into concrete trade decisions.} The ATS must convert abstract features (e.g., $G_{i}(\tau)$, sentiment regime, leader composition) into actionable orders: which token to trade, in which direction, at what size, and with which exit conditions.
+
+    \item \textbf{Execute trades reliably on decentralised exchanges.} Orders must be constructed, routed, and submitted to Solana DEX infrastructure (such as aggregators or routers) with appropriate handling of slippage, fees, and partial fills.
+
+    \item \textbf{Manage portfolio-level and per-trade risk.} The ATS must enforce constraints on exposure (per token and overall), drawdowns, and position lifetimes. Risk constraints take precedence over new signal-triggered entries.
+
+    \item \textbf{Support both simulation and live modes.} The same decision logic should be usable in an offline backtesting environment and in a live trading environment, differing only in the source of price/market data and the side effects of order execution.
+\end{enumerate}
+
+Table~\ref{tab:ats-objectives} summarises these objectives and their role in the end-to-end system.
+
+\begin{table}[h]
+    \centering
+    \caption{Core objectives of the Autonomous Trading System and their role in the overall pipeline.}
+    \label{tab:ats-objectives}
+    \begin{tabular}{p{3.6cm} p{4.8cm} p{4.6cm}}
+        \hline
+        \textbf{Objective} & \textbf{Description} & \textbf{Role in pipeline} \\
+        \hline
+        Signal-to-trade translation &
+        Map enriched signals $\big(G_{i}(\tau), z_{i}(\tau)\big)$ to concrete trade actions with clear entry/exit rules. &
+        Turns analytical outputs (coordination + sentiment) into executable decisions. \\
+        \hline
+        Reliable on-chain execution &
+        Build, route, and submit orders to Solana DEX infrastructure; handle slippage, fees, and partial fills. &
+        Provides the mechanism by which the research system interacts with real markets. \\
+        \hline
+        Risk and exposure management &
+        Enforce constraints on per-token exposure, portfolio-level risk, and drawdowns. &
+        Prevents uncontrolled risk-taking even when signals are strong; ensures survivability of the system. \\
+        \hline
+        Dual simulation/live operation &
+        Run the same policy logic in backtesting (simulated fills) and in live trading (real orders). &
+        Enables systematic evaluation of the methodology before deploying capital. \\
+        \hline
+    \end{tabular}
+\end{table}
+
+\subsubsection{High-Level ATS Architecture}
+
+To achieve these objectives, the ATS is structured into a small set of cooperating components. Figure~\ref{fig:ats-architecture} shows the high-level architecture.
+
+\begin{itemize}
+    \item \textbf{Signal Ingestion and State Manager.} Listens to enriched signals from the upstream pipeline and maintains internal state about open positions, recent signals per token, and portfolio exposure. It converts raw messages into internal \emph{trade opportunities} that the policy engine can evaluate.
+
+    \item \textbf{Policy and Decision Engine.} Encodes the core decision rules for entry, scaling, and exit. Given a trade opportunity and the current portfolio state, it decides whether to open or adjust a position and proposes a target position size, entry price constraints, and protective levels (e.g., stop-loss, take-profit).
+
+    \item \textbf{Risk Manager.} Acts as a veto or modifier layer on top of the policy engine. It checks proposed actions against risk constraints (per-token caps, portfolio value-at-risk proxies, maximum number of concurrent positions, daily loss limits) and may reduce, defer, or cancel orders.
+
+    \item \textbf{Execution Engine.} Translates approved trade actions into specific orders on Solana DEXs via an on-chain interface (for example, a router or aggregator). It handles slippage tolerances, time-in-force limits, partial fills, and retries where feasible.
+
+    \item \textbf{Portfolio and P\&L Tracker.} Maintains a record of open positions, realised and unrealised P\&L, and key portfolio metrics. This component feeds both the Risk Manager (for enforcement) and the visualisation/UI layer used in the prototype application.
+
+    \item \textbf{Backtesting and Replay Harness.} Provides an alternative execution path where, instead of sending real orders, the system replays historical price streams and simulates order fills according to a simplified market model. This harness is used to evaluate strategies and parameter settings without risking capital.
+\end{itemize}
+
+From a design perspective, the ATS is event-driven: enriched signals and market data updates are treated as events, and each event triggers a short decision cycle within the Policy Engine and Risk Manager. The separation between \emph{what} to do (policy) and \emph{whether it is allowed} (risk) keeps the system modular and makes it easier to reason about failures and edge cases.
+
+Figure~\ref{fig:ats-architecture} places the ATS in the context of the full pipeline and highlights its internal components.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=1\textwidth]{images/ats-architecture.png}
+    \caption{High-level architecture of the Autonomous Trading System. Enriched signals from coordination and sentiment flow into the Policy and Decision Engine, which proposes trades subject to Risk Manager approval. Approved actions are executed via the Execution Engine on Solana DEXs, while the Portfolio Tracker and Backtesting Harness support monitoring and offline evaluation.}
+    \label{fig:ats-architecture}
+\end{figure}
+
+\subsection{Signal Ingestion and Trade Decision Logic}
+
+The first responsibility of the Autonomous Trading System (ATS) is to transform enriched signals
+$\big(i, \tau, C_{i}(\tau), G_{i}(\tau), z_{i}(\tau)\big)$ into concrete \emph{trade opportunities}
+and to decide, for each opportunity, whether to open, adjust, or close a position, or to ignore the signal.
+This section describes how incoming signals are normalised, merged with the current portfolio state,
+and processed by a rule-based decision engine.
+
+\subsubsection{Signal Normalisation and De-duplication}
+
+Enriched signals are delivered to the ATS via a message channel from the integration layer
+(Section~3.5.4). Each signal record contains at least:
+
+\begin{itemize}
+    \item Token identifier $i$ (contract/mint address and symbol).
+    \item Coordination score $C_{i}(\tau)$ and sentiment-gated score $G_{i}(\tau)$.
+    \item Feature vector $z_{i}(\tau)$, including sentiment scores, attention, regime label, and
+          leader-composition features.
+    \item Timestamp $\tau$ and an internal unique identifier.
+\end{itemize}
+
+Upon receipt, the Signal Ingestion component performs:
+
+\begin{itemize}
+    \item \textbf{Schema validation and versioning.} Signals are first checked against the current
+    schema version. If fields are missing or deprecated, the signal is either rejected or mapped to
+    the closest compatible schema, with a warning logged.
+
+    \item \textbf{Temporal ordering.} Signals are sorted or processed in non-decreasing order of
+    $\tau$. In practice, minor out-of-order arrivals are tolerated by buffering small batches and
+    resorting by timestamp.
+
+    \item \textbf{De-duplication.} Signals that correspond to the same token and window
+    (e.g., same token $i$ and coordination time $\tau$) may be generated multiple times in rare
+    failure scenarios upstream. A short-lived cache keyed by $(i, \tau)$ is used to ignore exact or
+    near-duplicate signals.
+
+    \item \textbf{Context enrichment.} Before dispatching a signal to the Policy Engine, the
+    ingestion layer attaches the current portfolio state for token $i$ (if any), including
+    open quantity, average entry price, realised/unrealised P\&L, and risk flags. This yields an
+    internal \emph{trade opportunity} object:
+    \[
+        \mathcal{O}_{i}(\tau) = \big(i, \tau, G_{i}(\tau), z_{i}(\tau),
+        \text{position\_state}_{i}(\tau), \text{risk\_state}(\tau)\big).
+    \]
+\end{itemize}
+
+\subsubsection{Position State and Opportunity Classification}
+
+For each token $i$, the ATS maintains a simple, explicit position state:
+
+\begin{itemize}
+    \item \texttt{flat}: no open position in token $i$.
+    \item \texttt{long}: a net long position is currently open (quantity $q_{i} > 0$).
+    \item \texttt{closing}: an exit order is in progress (pending fills).
+\end{itemize}
+
+Given a trade opportunity $\mathcal{O}_{i}(\tau)$, the Policy Engine first classifies the opportunity
+into one of several decision categories, based on $G_{i}(\tau)$, the sentiment regime, and the current
+position state. Table~\ref{tab:ats-opportunity-types} summarises the main categories.
+
+\begin{table}[H]
+    \centering
+    \caption{Trade opportunity types derived from enriched signals and position state.}
+    \label{tab:ats-opportunity-types}
+    \begin{tabular}{p{3.4cm} p{4.6cm} p{4.8cm}}
+        \hline
+        \textbf{Opportunity type} & \textbf{Conditions (simplified)} & \textbf{Intended action} \\
+        \hline
+        New long entry candidate &
+        Position state \texttt{flat}; $G_{i}(\tau)$ above entry threshold; sentiment regime not in hard-block. &
+        Consider opening a new long position with size determined by $G_{i}(\tau)$ and risk budget. \\
+        \hline
+        Scale-in candidate (add to long) &
+        Position state \texttt{long}; $G_{i}(\tau)$ remains strong; risk budget allows higher exposure. &
+        Consider increasing position size, subject to per-token and portfolio caps. \\
+        \hline
+        Hold / monitor &
+        Position state \texttt{long}; $G_{i}(\tau)$ moderate or deteriorating; no strong exit trigger yet. &
+        Maintain current position; update trailing stops or profit targets if appropriate. \\
+        \hline
+        Exit or de-risk candidate &
+        Position state \texttt{long}; sentiment regime moves to caution or risk; or price/risk levels hit. &
+        Consider partial or full exit; tighten stops and/or place take-profit orders. \\
+        \hline
+        Ignore / suppressed &
+        Any state; $G_{i}(\tau)$ below minimum threshold or sentiment in hard-block regime. &
+        Do not open or increase positions; optionally use as a signal to avoid future entries temporarily. \\
+        \hline
+    \end{tabular}
+\end{table}
+
+This classification provides a human-readable bridge between raw quantitative features and trading
+actions. It is designed so that new rules can be added incrementally (for example, special handling
+for tokens with unusually high attention $A_{i}^{\text{att}}(\tau)$).
+
+\subsubsection{Entry and Scale-in Decision Rules}
+
+For \emph{new long entry} and \emph{scale-in} candidates, the Policy Engine applies a set of
+deterministic rules that map $G_{i}(\tau)$ and other features to a target position size and
+price/risk parameters. A typical rule set includes:
+
+\begin{itemize}
+    \item \textbf{Minimum gated strength.} Require
+    \[
+        G_{i}(\tau) \ge G_{\min}^{\text{entry}},
+    \]
+    where $G_{\min}^{\text{entry}}$ is a configurable threshold. Signals below this threshold are
+    ignored for entry decisions.
+
+    \item \textbf{Base position size.} Define a base risk unit $R$ (for example, a fraction of total
+    portfolio value) and map $G_{i}(\tau)$ to a multiplier $m(G_{i}(\tau)) \in [0, m_{\max}]$,
+    yielding a target notional exposure:
+    \[
+        \text{target\_notional}_{i}(\tau) = m\big(G_{i}(\tau)\big) \cdot R.
+    \]
+    The function $m(\cdot)$ can be piecewise linear or convex, placing more weight on very strong
+    signals.
+
+    \item \textbf{Incremental size for scale-in.} If a position already exists with notional
+    $\text{current\_notional}_{i}$, the engine computes an incremental size:
+    \[
+        \Delta \text{notional}_{i}(\tau)
+            = \max\big(0,\; \text{target\_notional}_{i}(\tau)
+                               - \text{current\_notional}_{i}\big),
+    \]
+    subject to an upper cap per token. If $\Delta \text{notional}_{i}(\tau)$ is below a minimum trade
+    size, no scale-in is performed.
+
+    \item \textbf{Entry constraints (price and slippage).} The engine reads the current best bid/ask
+    quotes from the DEX or router and sets:
+    \begin{itemize}
+        \item A maximum acceptable slippage percentage.
+        \item A time-in-force window after which unfilled parts of the order are cancelled.
+    \end{itemize}
+\end{itemize}
+
+If these rules yield a non-zero incremental size and the risk manager approves (Section~3.6.4),
+the policy engine issues a \emph{proposed entry action} for token $i$ at time $\tau$, including
+target notional, side, and protective levels (initial stop-loss and take-profit anchors).
+
+\subsubsection{Exit and De-risking Rules}
+
+Exit decisions are triggered by a combination of price-based conditions, sentiment and coordination
+deterioration, and global risk constraints. The basic exit logic can be expressed in terms of three
+layers:
+
+\begin{itemize}
+    \item \textbf{Hard stops and take-profit levels.} For each open position, the ATS maintains:
+    \begin{itemize}
+        \item A stop-loss level, typically expressed as a percentage drop from the average entry price
+        or as a maximum allowed loss per trade.
+        \item A take-profit level, which may be static or adapted over time (e.g., trailing with
+        favourable price moves).
+    \end{itemize}
+    Breach of either level automatically generates an exit action proposal, subject to execution
+    constraints.
+
+    \item \textbf{Signal-based de-risking.} Even if price has not hit stop-loss or take-profit levels,
+    a sharp deterioration in coordination or sentiment can trigger partial or full exits. For example,
+    if
+    \[
+        G_{i}(\tau) \le G_{\min}^{\text{hold}}
+        \quad \text{or} \quad
+        \text{Regime}_{i}(\tau) = \text{HardBlock},
+    \]
+    the policy engine may propose to close a fraction $\rho \in (0, 1]$ of the position, or to close
+    it entirely.
+
+    \item \textbf{Time-based exits.} To avoid indefinite holding of stale positions, the system can
+    enforce a maximum holding period $T_{\max}^{\text{hold}}$. Positions older than this threshold
+    are candidates for orderly exit, especially if fresh positive signals are absent.
+\end{itemize}
+
+Exit proposals, like entries, are then passed to the Risk Manager for validation against portfolio
+constraints.
+
+\subsubsection{Decision Cycle and Action States}
+
+Putting these elements together, the ATS decision cycle for a single opportunity
+$\mathcal{O}_{i}(\tau)$ consists of:
+
+\begin{enumerate}
+    \item Ingest and normalise the signal; attach current position and risk state.
+    \item Classify the opportunity type (new entry, scale-in, hold, exit candidate, ignore).
+    \item Apply entry/scale-in rules or exit/de-risking rules, depending on the type.
+    \item Generate a \emph{proposed action}:
+    \begin{itemize}
+        \item \texttt{OPEN\_LONG}(size, parameters),
+        \item \texttt{INCREASE\_LONG}(increment, parameters),
+        \item \texttt{CLOSE\_PARTIAL}(fraction, parameters),
+        \item \texttt{CLOSE\_FULL}(parameters),
+        \item or \texttt{NO\_ACTION}.
+    \end{itemize}
+    \item Submit the proposed action to the Risk Manager for validation and possible modification.
+\end{enumerate}
+
+Figure~\ref{fig:ats-decision-flow} illustrates this decision flow, from enriched signal and current
+position state to a proposed action that will be subject to risk checks and, if approved, executed
+on-chain.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\textwidth]{images/ats-decision-flow.png}
+    \caption{ATS signal-to-decision flow: enriched signals are combined with current position state, classified into opportunity types, and processed by rule-based entry and exit logic to generate proposed actions, which are subsequently vetted by the Risk Manager.}
+    \label{fig:ats-decision-flow}
+\end{figure}
+
+\subsection{Order Execution Engine and Exchange Integration}
+
+Once the Policy Engine and Risk Manager agree on a proposed action (Section~3.6.2), the Order
+Execution Engine is responsible for turning that action into concrete on-chain instructions. In the
+prototype, execution is performed against Solana-based decentralised exchanges (DEXs) via a router
+or aggregator that abstracts liquidity across multiple pools. The Execution Engine therefore sits at
+the interface between high-level trading decisions and low-level protocol calls.
+
+Its main responsibilities are:
+
+\begin{itemize}
+    \item Translating proposed actions into specific order parameters (token pair, side, size, price
+    constraints, slippage tolerance, time-in-force).
+    \item Selecting an appropriate execution route (for example, a single pool or a multi-hop path
+    chosen by an external router).
+    \item Submitting transactions to the Solana network, monitoring their confirmation status, and
+    reporting fills or failures back to the Portfolio Tracker.
+    \item Applying basic safeguards against adverse execution, including slippage limits and
+    cancellation of stale or partially filled orders.
+\end{itemize}
+
+\subsubsection{Exchange Abstraction and Routing}
+
+Rather than integrating directly with a single DEX protocol, the prototype assumes the presence of
+an \emph{exchange abstraction layer} provided by a router or SDK. This layer exposes a simplified API:
+
+\begin{itemize}
+    \item Quote requests: given an input token, output token, and desired input or output amount,
+    return an indicative price, expected slippage, and a proposed route.
+
+    \item Swap execution: given a route and order parameters, construct and submit a transaction to
+    the Solana network and return a transaction identifier.
+
+    \item Transaction status: given a transaction identifier, report whether the transaction has been
+    confirmed, partially filled, or failed.
+\end{itemize}
+
+The Execution Engine therefore treats the underlying DEX infrastructure as a black box with a
+well-defined quote-and-swap interface. This makes it easier to swap providers (for example,
+changing routers or adding fallback routes) without modifying the Policy or Risk modules.
+
+\subsubsection{Order Parameters and Constraints}
+
+For each approved action, the Execution Engine constructs a concrete order specification. Table~\ref{tab:ats-order-params} summarises the main parameters.
+
+\begin{table}[H]
+    \centering
+    \caption{Key order parameters used by the Execution Engine when interacting with Solana DEX infrastructure.}
+    \label{tab:ats-order-params}
+    \begin{tabular}{p{3.6cm} p{4.4cm} p{4.8cm}}
+        \hline
+        \textbf{Parameter} & \textbf{Description} & \textbf{Role in execution} \\
+        \hline
+        Base token and quote token &
+        Token being bought/sold (e.g., meme token) and the reference asset (e.g., SOL, USDC). &
+        Defines the trading pair and route selection universe. \\
+        \hline
+        Side (buy/sell) &
+        Direction of the trade, based on proposed action (e.g., \texttt{OPEN\_LONG} → buy). &
+        Determines order construction and position updates. \\
+        \hline
+        Target notional or quantity &
+        Amount to trade, derived from position sizing logic and current prices. &
+        Controls exposure; used for both quoting and final order. \\
+        \hline
+        Slippage tolerance &
+        Maximum acceptable deviation between quoted and executed price (e.g., 1--5\%). &
+        Protects against execution at extremely unfavourable prices in volatile or illiquid pools. \\
+        \hline
+        Time-in-force / expiry &
+        Maximum time the order is allowed to remain pending before cancellation. &
+        Prevents stale orders from filling unexpectedly long after the signal. \\
+        \hline
+        Priority / fee settings &
+        Optional parameters adjusting compute budget or priority fees on Solana. &
+        Allows faster confirmation when necessary, at the cost of higher fees. \\
+        \hline
+    \end{tabular}
+\end{table}
+
+Before submitting an order, the Execution Engine requests a quote from the router using the desired
+notional and slippage tolerance. If the quoted effective price or minimum expected output is
+inconsistent with the assumptions used by the Policy Engine (for example, due to a thin order book
+or sudden price movement), the order may be reduced in size or cancelled before it reaches the
+chain.
+
+\subsubsection{Execution Workflow: From Action to Transaction}
+
+The execution workflow for a single approved action can be summarised as follows:
+
+\begin{enumerate}
+    \item \textbf{Quote stage.} The Execution Engine sends a quote request to the router with the
+    base/quote tokens, side (buy or sell), and desired input or output amount. The router responds
+    with an indicative price, expected slippage, fee estimate, and a recommended route.
+
+    \item \textbf{Sanity checks.} The engine verifies that:
+    \begin{itemize}
+        \item The effective price does not exceed configured price bands (for example, no more than
+        a certain percentage above the last observed market price for buys).
+        \item The expected slippage is within the tolerance set by the Policy and Risk modules.
+        \item The wallet has sufficient balance in the funding asset to cover notional + fees.
+    \end{itemize}
+    If any check fails, the order is rejected and logged as a ``blocked by execution constraints'' event.
+
+    \item \textbf{Transaction construction and submission.} If checks pass, the engine asks the router
+    to construct a swap transaction and submits it to the Solana network. The resulting transaction
+    identifier is recorded in an execution log, along with the expected quantities and parameters.
+
+    \item \textbf{Confirmation monitoring.} A lightweight polling or subscription mechanism monitors
+    the status of the transaction until it reaches a final state (confirmed, failed, or expired).
+    Confirmation includes reading back the actual filled amounts from on-chain logs.
+
+    \item \textbf{Position and P\&L update.} Once the final state is known, the Portfolio Tracker
+    updates the position for token $i$ (quantities, average entry/exit price) and records realised
+    and unrealised P\&L. Any deviations between expected and actual fill (for example, partial fills)
+    are propagated back to the Risk Manager and logged for later analysis.
+\end{enumerate}
+
+\subsubsection{Partial Fills, Failures, and Retry Logic}
+
+On-chain execution is subject to a variety of failure modes: transactions may fail due to insufficient
+liquidity, rapid price changes, network congestion, or router errors. The Execution Engine must
+handle these cases without placing the system in an inconsistent state.
+
+Key policies include:
+
+\begin{itemize}
+    \item \textbf{Partial fills.} If only a fraction of the desired quantity is filled, the Portfolio
+    Tracker reflects the actual filled size. The remaining unfilled portion is either:
+    \begin{itemize}
+        \item Cancelled (most conservative default), or
+        \item Re-quoted as a new, smaller order if the Policy and Risk modules still approve.
+    \end{itemize}
+
+    \item \textbf{Hard failures.} If a transaction is rejected or fails on-chain, the position state is
+    left unchanged and the failure is logged with reason codes (where available). The engine may:
+    \begin{itemize}
+        \item Attempt a single retry with more conservative parameters (smaller size, wider slippage)
+        for entries, or
+        \item Escalate to a ``risk alert'' if the failure affected an exit order that was intended to
+        limit losses.
+    \end{itemize}
+
+    \item \textbf{Timeouts.} If a transaction remains unconfirmed beyond a maximum time window, the
+    engine treats it as expired and, where protocol-compatible, cancels any pending on-chain orders
+    associated with it. The Policy Engine may then reconsider the trade opportunity based on updated
+    prices.
+\end{itemize}
+
+\subsubsection{Simulation Mode and Execution Abstraction}
+
+For backtesting and simulation, the Execution Engine is replaced by a \emph{simulated execution
+backend} that:
+
+\begin{itemize}
+    \item Consumes the same proposed actions as in live mode.
+    \item Uses historical price streams to approximate fills (for example, assuming fills at the next
+    bar close or within a bid/ask band).
+    \item Applies simplified slippage and fee models.
+\end{itemize}
+
+Because both live and simulated modes share the same action interface, the Policy Engine and Risk
+Manager can be evaluated without modification. This design also allows for incremental refinement
+of the execution model (for example, more realistic slippage curves) without changing the core
+decision logic.
+
+Figure~\ref{fig:ats-execution-flow} depicts the execution flow from approved actions through quoting,
+sanity checks, transaction submission, and portfolio updates.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\textwidth]{images/ats-execution-flow.png}
+    \caption{Order execution flow: approved actions are translated into DEX orders via a router; quotes and sanity checks protect against extreme prices; transaction status and actual fills feed back into the Portfolio Tracker and Risk Manager.}
+    \label{fig:ats-execution-flow}
+\end{figure}
+
+\subsection{Risk Management and Position Sizing}
+
+The Risk Manager is the central safety layer of the Autonomous Trading System (ATS). While the
+Policy Engine proposes trades based on coordination and sentiment (Section~3.6.2), the Risk Manager
+decides whether these trades are allowed under current exposure, drawdown, and capital constraints.
+Its primary goal is to ensure that, even in the presence of strong signals, the system cannot exceed
+predefined risk budgets at the per-trade, per-token, and portfolio levels.
+
+Concretely, the Risk Manager:
+
+\begin{itemize}
+    \item Enforces hard limits on position sizes per token and on total portfolio exposure.
+    \item Controls per-trade risk via maximum loss per position (stop-loss based) and minimum
+    reward-to-risk ratios.
+    \item Monitors realised and unrealised P\&L to detect drawdowns and apply temporary trading
+    lockouts when losses exceed configured thresholds.
+    \item Adjusts or vetoes proposed actions from the Policy Engine when they conflict with any of
+    these constraints.
+\end{itemize}
+
+\subsubsection{Risk Budgets and Exposure Constraints}
+
+The system assumes that a total capital amount $V_{\text{port}}(\tau)$ (e.g., portfolio value in USDC)
+is allocated to the strategy. Risk budgets are defined as fractions of this value. Table~\ref{tab:ats-risk-constraints}
+summarises the main constraints.
+
+\begin{table}[H]
+    \centering
+    \caption{Key risk and exposure constraints enforced by the Risk Manager.}
+    \label{tab:ats-risk-constraints}
+    \begin{tabular}{p{3.6cm} p{4.4cm} p{4.8cm}}
+        \hline
+        \textbf{Constraint} & \textbf{Definition} & \textbf{Purpose} \\
+        \hline
+        Per-trade risk budget $R$ &
+        Maximum capital at risk per new trade (e.g., 0.5--2\% of $V_{\text{port}}$). &
+        Bounds loss from any single position if its stop-loss is hit. \\
+        \hline
+        Max notional per token $L_{\text{token}}$ &
+        Upper bound on total exposure in a single token (e.g., 5--10\% of $V_{\text{port}}$). &
+        Reduces concentration risk in highly volatile assets. \\
+        \hline
+        Max aggregate exposure $L_{\text{gross}}$ &
+        Upper bound on total gross long exposure across all tokens (e.g., 50--80\% of $V_{\text{port}}$). &
+        Prevents full leverage or over-allocation to risky assets. \\
+        \hline
+        Max concurrent positions $N_{\max}$ &
+        Maximum number of distinct tokens with open positions. &
+        Limits operational complexity and diversification beyond a manageable set. \\
+        \hline
+        Daily loss limit $D_{\max}$ &
+        Maximum allowed realised loss in a day; breaches trigger lockout. &
+        Cuts off trading after unusually bad sessions. \\
+        \hline
+        Peak-to-valley drawdown limit $\Delta_{\max}$ &
+        Maximum allowed portfolio drawdown from peak equity; breaches trigger lockout or de-risking. &
+        Protects against slow but persistent underperformance. \\
+        \hline
+    \end{tabular}
+\end{table}
+
+At any time $\tau$, the Risk Manager computes:
+
+\begin{itemize}
+    \item Current per-token exposure $E_{i}(\tau)$ (notional of open positions in token $i$).
+    \item Total gross exposure $E_{\text{gross}}(\tau) = \sum_{i} E_{i}(\tau)$.
+    \item Current realised P\&L for the trading day and peak-to-valley drawdown.
+\end{itemize}
+
+If a proposed action would cause any of the constraints in Table~\ref{tab:ats-risk-constraints} to be
+violated, the Risk Manager either scales down the action or vetoes it altogether.
+
+\subsubsection{Per-Trade Risk and Position Sizing}
+
+The Policy Engine uses a base risk unit $R$ to propose target notionals
+$\text{target\_notional}_{i}(\tau)$ (Section~3.6.2). The Risk Manager refines this by enforcing
+per-trade loss limits and minimum reward-to-risk ratios.
+
+Given a proposed entry or scale-in for token $i$, the following steps are applied:
+
+\begin{enumerate}
+    \item \textbf{Candidate stop-loss level.} The Policy Engine suggests an initial stop-loss price
+    $P_{i}^{\text{SL}}$ for the position, based on volatility, liquidity, or simple percentage
+    offsets. Combined with the intended entry price $P_{i}^{\text{entry}}$, this yields a per-unit
+    loss:
+    \[
+        \ell_{i} = P_{i}^{\text{entry}} - P_{i}^{\text{SL}} \quad (\text{for long positions}).
+    \]
+
+    \item \textbf{Max permissible quantity from risk budget.} From the per-trade risk budget $R$, the
+    maximum position size in units of the token is:
+    \[
+        q_{i}^{\max} = \frac{R}{\ell_{i}}.
+    \]
+    The corresponding notional exposure is $E_{i}^{\max} = q_{i}^{\max} \cdot P_{i}^{\text{entry}}$.
+
+    \item \textbf{Apply per-token and portfolio caps.} The admissible additional exposure for token
+    $i$ is:
+    \[
+        \Delta E_{i}^{\text{cap}}(\tau)
+            = \min\big(
+                L_{\text{token}} - E_{i}(\tau),\;
+                L_{\text{gross}} - E_{\text{gross}}(\tau)
+            \big),
+    \]
+    clamped below at 0 if either budget is already exhausted.
+
+    \item \textbf{Final allowed exposure increment.} The Risk Manager compares:
+    \[
+        \Delta E_{i}^{\text{prop}}(\tau)
+            = \text{proposed incremental notional from Policy Engine},
+    \]
+    with both $E_{i}^{\max}$ and $\Delta E_{i}^{\text{cap}}(\tau)$. The final allowed increment is:
+    \[
+        \Delta E_{i}^{\text{allowed}}(\tau)
+            = \min\big(\Delta E_{i}^{\text{prop}}(\tau), E_{i}^{\max}, \Delta E_{i}^{\text{cap}}(\tau)\big).
+    \]
+    If $\Delta E_{i}^{\text{allowed}}(\tau)$ falls below a minimum trade size, the action is rejected.
+\end{enumerate}
+
+This ensures that:
+
+\begin{itemize}
+    \item The maximum potential loss on the trade (if the stop-loss is hit) does not exceed $R$.
+    \item Per-token and portfolio exposure constraints are not breached.
+\end{itemize}
+
+A similar logic applies when scaling into existing positions, with $E_{i}(\tau)$ reflecting the
+current exposure before the proposed increment.
+
+\subsubsection{Portfolio-Level Risk and Lockout Mechanisms}
+
+Beyond per-trade limits, the Risk Manager monitors portfolio-wide performance to prevent runaway
+losses. Two key mechanisms are used:
+
+\begin{itemize}
+    \item \textbf{Daily loss limit.} Let $L_{\text{day}}(\tau)$ be the cumulative realised loss for the
+    current trading day (non-positive). If
+    \[
+        |L_{\text{day}}(\tau)| \ge D_{\max},
+    \]
+    the system enters a \emph{daily lockout} state: all new entries are rejected for the remainder of
+    the day, and only risk-reducing exits are permitted. This emulates common discretionary trading
+    practices.
+
+    \item \textbf{Drawdown-based de-risking.} Let $V_{\text{peak}}$ denote the historical peak
+    portfolio value and $V_{\text{port}}(\tau)$ the current value. The drawdown is:
+    \[
+        \Delta(\tau) = \frac{V_{\text{peak}} - V_{\text{port}}(\tau)}{V_{\text{peak}}}.
+    \]
+    If $\Delta(\tau) \ge \Delta_{\max}$, the system can either:
+    \begin{itemize}
+        \item Enter a full lockout (no new entries, gradual exit of existing positions), or
+        \item Reduce all position caps (e.g., halve $L_{\text{token}}$ and $L_{\text{gross}}$) until
+        equity recovers above a threshold.
+    \end{itemize}
+\end{itemize}
+
+These mechanisms are particularly important for experimental strategies in highly volatile markets,
+where historical performance can change abruptly.
+
+\subsubsection{Interaction with the Policy Engine}
+
+The Risk Manager operates as a post-processor over proposed actions from the Policy Engine. Given a
+proposed action $A_{i}(\tau)$ and associated parameters, the Risk Manager:
+
+\begin{enumerate}
+    \item Computes updated exposure metrics and checks all constraints.
+    \item Adjusts the action size if possible (e.g., reducing notional to remain within caps).
+    \item Either returns a modified action for execution or a veto (\texttt{NO\_ACTION}) with a reason
+    code (e.g., ``per-token cap exceeded'', ``daily loss limit hit'').
+\end{enumerate}
+
+In addition, the Risk Manager may pre-emptively propose \emph{risk-driven exits}, even in the absence
+of fresh coordination or sentiment signals. For example, if aggregate exposure is high and a strong
+negative portfolio move occurs, it can request partial de-risking across multiple tokens.
+
+Figure~\ref{fig:ats-risk-flow} shows the interaction between the Policy Engine, Risk Manager,
+Execution Engine, and Portfolio Tracker as part of the risk management loop.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\textwidth]{images/ats-risk-flow.png}
+    \caption{Risk management loop in the ATS: proposed actions from the Policy Engine are checked against per-trade, per-token, and portfolio-wide constraints; the Risk Manager may scale or veto actions, while portfolio and P\&L updates feed back into future risk assessments and possible lockouts.}
+    \label{fig:ats-risk-flow}
+\end{figure}
+
+\subsection{Backtesting and Simulation Framework}
+
+Before deploying the Autonomous Trading System (ATS) with real capital, its behaviour must be studied
+under controlled conditions. The backtesting and simulation framework provides a way to replay
+historical data and synthetic coordination/sentiment signals through the same decision logic used in
+live trading, while replacing on-chain execution with a simplified market model. This allows
+systematic evaluation of performance, robustness, and sensitivity to configuration choices.
+
+\subsubsection{Objectives and Design Principles}
+
+The backtesting environment is designed with the following objectives:
+
+\begin{itemize}
+    \item \textbf{Reuse of production logic.} The Policy Engine, Risk Manager, and (simulated)
+    Execution Engine share the same interfaces and code paths as in live mode, to avoid
+    ``simulation-only'' shortcuts that would not hold in production.
+
+    \item \textbf{Determinism and reproducibility.} Given the same historical data, configuration, and
+    random seeds, the framework should produce identical results, enabling controlled experiments and
+    parameter sweeps.
+
+    \item \textbf{Transparency of assumptions.} The execution model (fills, slippage, latency) is kept
+    deliberately simple and explicitly documented, so that evaluation results can be interpreted in
+    light of these assumptions.
+
+    \item \textbf{Rich logging for analysis.} All decisions (entries, exits, vetoes, lockouts) and
+    their inputs (signals, sentiment, prices, risk state) are logged for post hoc analysis and
+    debugging.
+\end{itemize}
+
+\subsubsection{Data Inputs for Backtesting}
+
+The backtesting framework consumes two main classes of input data:
+
+\begin{itemize}
+    \item \textbf{Market price data.} Historical price series for tokens of interest, typically in
+    the form of OHLCV candles (open, high, low, close, volume) at a fixed granularity (e.g., 1-minute
+    or 5-minute bars). Where available, mid-price or bid/ask series can be used to model spread and
+    slippage more realistically.
+
+    \item \textbf{Signal and feature streams.} Recorded or simulated streams of enriched signals
+    $\big(i, \tau, C_{i}(\tau), G_{i}(\tau), z_{i}(\tau)\big)$ produced by the upstream modules
+    (wallet tracking and sentiment). In the simplest case, these are historical logs captured during
+    a previous live or paper-trading run; in synthetic experiments, they can be generated from
+    recorded on-chain events and offline sentiment analysis.
+\end{itemize}
+
+The backtester synchronises these inputs on a common time axis. At each simulation time step
+(typically aligned to candle boundaries), it:
+
+\begin{enumerate}
+    \item Injects all signals with timestamps in the current interval into the ATS.
+    \item Updates the price and market state visible to the Policy Engine, Risk Manager, and simulated
+    Execution Engine.
+    \item Processes any pending orders and updates fills and P\&L based on the execution model.
+\end{enumerate}
+
+\subsubsection{Execution Model in Simulation}
+
+In simulation mode, the Execution Engine is replaced by a backend that approximates order fills using
+historical prices. Several levels of sophistication are possible; in this work, a simple but explicit
+model is used:
+
+\begin{itemize}
+    \item \textbf{Fill price for market-style orders.} If the ATS issues a buy (long entry) at time
+    $\tau$ and the next candle after $\tau$ has high/low range $[L, H]$, the simulated fill price is
+    chosen as:
+    \[
+        P_{\text{fill}} = \min\big(H,\, P_{\text{entry}}^{\text{limit}} \cdot (1 + \text{slip}_{\max})\big),
+    \]
+    where $P_{\text{entry}}^{\text{limit}}$ is the indicative market price at time $\tau$ and
+    $\text{slip}_{\max}$ is a configured slippage cap. If $L$ and $H$ do not cross the limit band,
+    the order is treated as unfilled.
+
+    \item \textbf{Stop-loss and take-profit triggers.} For open positions, if a subsequent candle has
+    low $L \le P_{i}^{\text{SL}}$ or high $H \ge P_{i}^{\text{TP}}$, the corresponding stop-loss or
+    take-profit is considered triggered. The fill price is approximated by the stop level or, in more
+    conservative variants, by the worst price within the candle range.
+
+    \item \textbf{Partial fills.} For simplicity, the prototype either fills the entire order or none
+    of it within a candle. More advanced models could allow partial fills proportional to traded
+    volume, but this is left for future work.
+\end{itemize}
+
+This model does not attempt to simulate full order-book dynamics, but it captures the basic
+relationship between signals, execution timing, and candle-level price paths.
+
+\subsubsection{Performance Metrics and Diagnostics}
+
+The framework computes a suite of performance metrics to evaluate the ATS. Table~\ref{tab:ats-metrics}
+lists key metrics used in this work.
+
+\begin{table}[H]
+    \centering
+    \caption{Representative performance and risk metrics computed in the backtesting framework.}
+    \label{tab:ats-metrics}
+    \begin{tabular}{p{3.8cm} p{4.2cm} p{4.8cm}}
+        \hline
+        \textbf{Metric} & \textbf{Definition} & \textbf{Interpretation} \\
+        \hline
+        Total return &
+        $(V_{\text{final}} - V_{\text{initial}}) / V_{\text{initial}}$. &
+        Overall profitability of the strategy over the backtest period. \\
+        \hline
+        Max drawdown &
+        Maximum peak-to-valley percentage drop in portfolio value. &
+        Measures worst historical loss trajectory; indicates risk of ruin. \\
+        \hline
+        Hit rate (win ratio) &
+        Number of profitable trades divided by total closed trades. &
+        Indicates how often trades are profitable, irrespective of size. \\
+        \hline
+        Average win / loss &
+        Mean profit per winning trade vs mean loss per losing trade. &
+        Shows whether winners are large enough to compensate for losers. \\
+        \hline
+        Profit factor &
+        Ratio of total gross profit to total gross loss. &
+        Summarises the balance between wins and losses; >1 desirable. \\
+        \hline
+        Exposure utilisation &
+        Average and peak fraction of capital deployed (e.g., $E_{\text{gross}} / V_{\text{port}}$). &
+        Indicates how aggressively the strategy uses available risk budget. \\
+        \hline
+        Trade frequency and turnover &
+        Number of trades, average holding time, and portfolio turnover. &
+        Reflects how active the strategy is and the potential impact of fees. \\
+        \hline
+    \end{tabular}
+\end{table}
+
+In addition to aggregate metrics, the framework records detailed logs per trade and per signal,
+including:
+
+\begin{itemize}
+    \item Which coordination and sentiment features were present when the trade was opened.
+    \item Whether the trade was later closed by a take-profit, stop-loss, time-based exit, or
+    risk-driven de-risking.
+    \item Whether any proposed trades were vetoed by the Risk Manager (and the corresponding reason).
+\end{itemize}
+
+These diagnostics are used in the evaluation chapter to analyse the contribution of each pipeline
+component (e.g., leader coordination vs sentiment gating vs risk caps).
+
+\subsubsection{Experimental Scenarios}
+
+The backtesting framework supports running multiple experimental scenarios that differ in which
+pipeline components are active. Examples include:
+
+\begin{itemize}
+    \item \textbf{Coordination-only baseline.} Use coordination signals and the ATS, but disable
+    sentiment gating (e.g., set $G_{i}(\tau) = C_{i}(\tau)$). This baseline tests the value of
+    off-chain sentiment.
+
+    \item \textbf{No-risk-controls variant.} Relax or remove some risk constraints (e.g., per-trade
+    risk budget or daily loss limit) to observe how much they shape performance and drawdowns.
+
+    \item \textbf{Full system.} Enable coordination, sentiment gating, and all risk controls to assess
+    the behaviour of the complete methodology.
+\end{itemize}
+
+By comparing these scenarios under the same historical market conditions, the relative impact of
+each methodological choice can be quantified.
+
+\subsubsection{Architecture of the Backtesting Harness}
+
+Figure~\ref{fig:ats-backtest-arch} illustrates the backtesting architecture. Historical price data
+and recorded signals are fed through the same Signal Ingestion, Policy, and Risk modules as in
+production, while a simulated Execution backend replaces real DEX interaction. The Portfolio
+Tracker, metrics calculators, and logging components remain identical across live and simulated
+modes, ensuring that differences in performance are attributable to data and configuration rather
+than to code paths.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=1\textwidth]{images/tracker-mutual-logic.png}
+    \caption{Backtesting architecture: historical prices and recorded signal streams are replayed through the ATS decision logic, with a simulated Execution Engine modelling fills and P\&L. Metrics and detailed logs are produced for analysis and comparison across scenarios.}
+    \label{fig:ats-backtest-arch}
+\end{figure}
+
+\subsection{Backtesting and Simulation Framework}
+
+Before deploying the Autonomous Trading System (ATS) with real capital, its behaviour must be studied
+under controlled conditions. The backtesting and simulation framework provides a way to replay
+historical data and synthetic coordination/sentiment signals through the same decision logic used in
+live trading, while replacing on-chain execution with a simplified market model. This allows
+systematic evaluation of performance, robustness, and sensitivity to configuration choices.
+
+\subsubsection{Objectives and Design Principles}
+
+The backtesting environment is designed with the following objectives:
+
+\begin{itemize}
+    \item \textbf{Reuse of production logic.} The Policy Engine, Risk Manager, and (simulated)
+    Execution Engine share the same interfaces and code paths as in live mode, to avoid
+    ``simulation-only'' shortcuts that would not hold in production.
+
+    \item \textbf{Determinism and reproducibility.} Given the same historical data, configuration, and
+    random seeds, the framework should produce identical results, enabling controlled experiments and
+    parameter sweeps.
+
+    \item \textbf{Transparency of assumptions.} The execution model (fills, slippage, latency) is kept
+    deliberately simple and explicitly documented, so that evaluation results can be interpreted in
+    light of these assumptions.
+
+    \item \textbf{Rich logging for analysis.} All decisions (entries, exits, vetoes, lockouts) and
+    their inputs (signals, sentiment, prices, risk state) are logged for post hoc analysis and
+    debugging.
+\end{itemize}
+
+\subsubsection{Data Inputs for Backtesting}
+
+The backtesting framework consumes two main classes of input data:
+
+\begin{itemize}
+    \item \textbf{Market price data.} Historical price series for tokens of interest, typically in
+    the form of OHLCV candles (open, high, low, close, volume) at a fixed granularity (e.g., 1-minute
+    or 5-minute bars). Where available, mid-price or bid/ask series can be used to model spread and
+    slippage more realistically.
+
+    \item \textbf{Signal and feature streams.} Recorded or simulated streams of enriched signals
+    $\big(i, \tau, C_{i}(\tau), G_{i}(\tau), z_{i}(\tau)\big)$ produced by the upstream modules
+    (wallet tracking and sentiment). In the simplest case, these are historical logs captured during
+    a previous live or paper-trading run; in synthetic experiments, they can be generated from
+    recorded on-chain events and offline sentiment analysis.
+\end{itemize}
+
+The backtester synchronises these inputs on a common time axis. At each simulation time step
+(typically aligned to candle boundaries), it:
+
+\begin{enumerate}
+    \item Injects all signals with timestamps in the current interval into the ATS.
+    \item Updates the price and market state visible to the Policy Engine, Risk Manager, and simulated
+    Execution Engine.
+    \item Processes any pending orders and updates fills and P\&L based on the execution model.
+\end{enumerate}
+
+\subsubsection{Execution Model in Simulation}
+
+In simulation mode, the Execution Engine is replaced by a backend that approximates order fills using
+historical prices. Several levels of sophistication are possible; in this work, a simple but explicit
+model is used:
+
+\begin{itemize}
+    \item \textbf{Fill price for market-style orders.} If the ATS issues a buy (long entry) at time
+    $\tau$ and the next candle after $\tau$ has high/low range $[L, H]$, the simulated fill price is
+    chosen as:
+    \[
+        P_{\text{fill}} = \min\big(H,\, P_{\text{entry}}^{\text{limit}} \cdot (1 + \text{slip}_{\max})\big),
+    \]
+    where $P_{\text{entry}}^{\text{limit}}$ is the indicative market price at time $\tau$ and
+    $\text{slip}_{\max}$ is a configured slippage cap. If $L$ and $H$ do not cross the limit band,
+    the order is treated as unfilled.
+
+    \item \textbf{Stop-loss and take-profit triggers.} For open positions, if a subsequent candle has
+    low $L \le P_{i}^{\text{SL}}$ or high $H \ge P_{i}^{\text{TP}}$, the corresponding stop-loss or
+    take-profit is considered triggered. The fill price is approximated by the stop level or, in more
+    conservative variants, by the worst price within the candle range.
+
+    \item \textbf{Partial fills.} For simplicity, the prototype either fills the entire order or none
+    of it within a candle. More advanced models could allow partial fills proportional to traded
+    volume, but this is left for future work.
+\end{itemize}
+
+This model does not attempt to simulate full order-book dynamics, but it captures the basic
+relationship between signals, execution timing, and candle-level price paths.
+
+\subsubsection{Performance Metrics and Diagnostics}
+
+The framework computes a suite of performance metrics to evaluate the ATS. Table~\ref{tab:ats-metrics}
+lists key metrics used in this work.
+
+\begin{table}[H]
+    \centering
+    \caption{Representative performance and risk metrics computed in the backtesting framework.}
+    \label{tab:ats-metrics}
+    \begin{tabular}{p{3.8cm} p{4.2cm} p{4.8cm}}
+        \hline
+        \textbf{Metric} & \textbf{Definition} & \textbf{Interpretation} \\
+        \hline
+        Total return &
+        $(V_{\text{final}} - V_{\text{initial}}) / V_{\text{initial}}$. &
+        Overall profitability of the strategy over the backtest period. \\
+        \hline
+        Max drawdown &
+        Maximum peak-to-valley percentage drop in portfolio value. &
+        Measures worst historical loss trajectory; indicates risk of ruin. \\
+        \hline
+        Hit rate (win ratio) &
+        Number of profitable trades divided by total closed trades. &
+        Indicates how often trades are profitable, irrespective of size. \\
+        \hline
+        Average win / loss &
+        Mean profit per winning trade vs mean loss per losing trade. &
+        Shows whether winners are large enough to compensate for losers. \\
+        \hline
+        Profit factor &
+        Ratio of total gross profit to total gross loss. &
+        Summarises the balance between wins and losses; >1 desirable. \\
+        \hline
+        Exposure utilisation &
+        Average and peak fraction of capital deployed (e.g., $E_{\text{gross}} / V_{\text{port}}$). &
+        Indicates how aggressively the strategy uses available risk budget. \\
+        \hline
+        Trade frequency and turnover &
+        Number of trades, average holding time, and portfolio turnover. &
+        Reflects how active the strategy is and the potential impact of fees. \\
+        \hline
+    \end{tabular}
+\end{table}
+
+In addition to aggregate metrics, the framework records detailed logs per trade and per signal,
+including:
+
+\begin{itemize}
+    \item Which coordination and sentiment features were present when the trade was opened.
+    \item Whether the trade was later closed by a take-profit, stop-loss, time-based exit, or
+    risk-driven de-risking.
+    \item Whether any proposed trades were vetoed by the Risk Manager (and the corresponding reason).
+\end{itemize}
+
+These diagnostics are used in the evaluation chapter to analyse the contribution of each pipeline
+component (e.g., leader coordination vs sentiment gating vs risk caps).
+
+\subsubsection{Experimental Scenarios}
+
+The backtesting framework supports running multiple experimental scenarios that differ in which
+pipeline components are active. Examples include:
+
+\begin{itemize}
+    \item \textbf{Coordination-only baseline.} Use coordination signals and the ATS, but disable
+    sentiment gating (e.g., set $G_{i}(\tau) = C_{i}(\tau)$). This baseline tests the value of
+    off-chain sentiment.
+
+    \item \textbf{No-risk-controls variant.} Relax or remove some risk constraints (e.g., per-trade
+    risk budget or daily loss limit) to observe how much they shape performance and drawdowns.
+
+    \item \textbf{Full system.} Enable coordination, sentiment gating, and all risk controls to assess
+    the behaviour of the complete methodology.
+\end{itemize}
+
+By comparing these scenarios under the same historical market conditions, the relative impact of
+each methodological choice can be quantified.
+
+\subsubsection{Architecture of the Backtesting Harness}
+
+Figure~\ref{fig:ats-backtest-arch} illustrates the backtesting architecture. Historical price data
+and recorded signals are fed through the same Signal Ingestion, Policy, and Risk modules as in
+production, while a simulated Execution backend replaces real DEX interaction. The Portfolio
+Tracker, metrics calculators, and logging components remain identical across live and simulated
+modes, ensuring that differences in performance are attributable to data and configuration rather
+than to code paths.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\textwidth]{images/ats-backtest-arch.png}
+    \caption{Backtesting architecture: historical prices and recorded signal streams are replayed through the ATS decision logic, with a simulated Execution Engine modelling fills and P\&L. Metrics and detailed logs are produced for analysis and comparison across scenarios.}
+    \label{fig:ats-backtest-arch}
+\end{figure}
+
+\subsection{Configuration, Hyperparameters, and Tuning Strategy}
+
+The behaviour of the end-to-end system is governed by a large number of configuration parameters
+and hyperparameters, spanning the Trader Selection Framework (TSF), Wallet Tracking Module,
+Sentiment Analysis Module, and Autonomous Trading System (ATS). To keep the methodology
+reproducible and interpretable, these parameters are grouped into structured configuration files
+and tuned using a disciplined, scenario-based process.
+
+This section summarises the main classes of hyperparameters relevant to the ATS and describes the
+tuning strategy used in this project.
+
+\subsubsection{Configuration Structure and Parameter Groups}
+
+All configuration parameters are organised into a small set of logical groups, stored in human-readable
+files (e.g., YAML) that are version-controlled alongside the code. For the purposes of the
+methodology, four groups are especially important:
+
+\begin{itemize}
+    \item \textbf{Coordination and tracking parameters.} Control when the Wallet Tracking Module
+    emits coordination signals (e.g., window length $\Delta T$, minimum leader count $n_{\min}$,
+    minimum volume $V_{\min}$, weights in the coordination score $C_{i}(\tau)$).
+
+    \item \textbf{Sentiment and gating parameters.} Control how off-chain sentiment is aggregated
+    and how it gates coordination (e.g., sentiment thresholds $s_{\min}^{-}, s_{\max}^{+}$,
+    red-flag thresholds $R_{\text{block}}$, shape of $\phi_{\text{pol}}$ and $\phi_{\text{risk}}$,
+    source weights $\omega_{k}^{\text{sent}}$ and $\omega_{k}^{\text{risk}}$).
+
+    \item \textbf{ATS trade policy parameters.} Control mapping from $G_{i}(\tau)$ and other features
+    to entry, scale-in, and exit decisions (e.g., $G_{\min}^{\text{entry}}$, $G_{\min}^{\text{hold}}$,
+    functions $m(G)$ for position sizing, stop-loss and take-profit offsets, maximum holding time
+    $T_{\max}^{\text{hold}}$).
+
+    \item \textbf{Risk and execution parameters.} Control per-trade risk budget $R$, per-token and
+    portfolio caps $L_{\text{token}}, L_{\text{gross}}$, daily loss limit $D_{\max}$, drawdown
+    limit $\Delta_{\max}$, maximum slippage and time-in-force, and simulated execution assumptions
+    (e.g., slippage caps, fill rules).
+\end{itemize}
+
+Table~\ref{tab:config-groups} provides an illustrative mapping between parameter groups and their
+primary influence on behaviour.
+
+\begin{table}[H]
+    \centering
+    \caption{Configuration groups and their primary influence on system behaviour.}
+    \label{tab:config-groups}
+    \begin{tabular}{p{3.8cm} p{4.2cm} p{4.8cm}}
+        \hline
+        \textbf{Group} & \textbf{Example parameters} & \textbf{Primary influence} \\
+        \hline
+        Coordination / tracking &
+        $\Delta T$, $n_{\min}$, $V_{\min}$, weights in $C_{i}(\tau)$. &
+        How often leader coordination is detected; trade opportunity frequency and quality. \\
+        \hline
+        Sentiment / gating &
+        $s_{\min}^{-}, s_{\max}^{+}$, $R_{\text{block}}$, $\omega_{k}^{\text{sent}}$, $\omega_{k}^{\text{risk}}$. &
+        Degree to which off-chain sentiment blocks or boosts otherwise similar coordination events. \\
+        \hline
+        ATS trade policy &
+        $G_{\min}^{\text{entry}}$, $G_{\min}^{\text{hold}}$, $m(G)$, stop-loss / take-profit offsets, $T_{\max}^{\text{hold}}$. &
+        Aggressiveness of entries, scale-ins, and exits in response to signals. \\
+        \hline
+        Risk / execution &
+        $R$, $L_{\text{token}}$, $L_{\text{gross}}$, $N_{\max}$, $D_{\max}$, $\Delta_{\max}$, slippage caps. &
+        Overall risk level, capital utilisation, and sensitivity to adverse execution. \\
+        \hline
+    \end{tabular}
+\end{table}
+
+\subsubsection{Tuning Workflow Using the Backtesting Framework}
+
+Hyperparameters are tuned using the backtesting framework described in Section~3.6.5. The tuning
+process follows a pragmatic, multi-stage workflow:
+
+\begin{enumerate}
+    \item \textbf{Establish conservative defaults.} Start with parameter values derived from simple
+    risk heuristics and prior experience (e.g., per-trade risk $R$ in the range 0.5--1\% of capital,
+    modest per-token caps, tight slippage limits, relatively high thresholds for $n_{\min}$ and
+    $G_{\min}^{\text{entry}}$).
+
+    \item \textbf{Single-component sweeps.} Vary one parameter (or a small subset) at a time while
+    keeping the rest fixed, to understand first-order effects. For example:
+    \begin{itemize}
+        \item Sweep $G_{\min}^{\text{entry}}$ to see how it affects trade frequency, hit rate, and
+        average win/loss.
+        \item Sweep $R$ and $L_{\text{token}}$ to understand sensitivity of drawdowns and total return
+        to risk per trade and concentration.
+    \end{itemize}
+
+    \item \textbf{Scenario comparisons.} Run the experimental scenarios described in
+    Section~3.6.5 (coordination-only baseline, no-risk-controls variant, full system) to quantify the
+    incremental impact of sentiment gating and risk caps.
+
+    \item \textbf{Coarse grid or random search over critical parameters.} For a small subset of
+    critical parameters (e.g., $G_{\min}^{\text{entry}}$, $R$, $L_{\text{token}}$, $D_{\max}$),
+    perform a coarse grid search or random search over plausible ranges and evaluate performance
+    metrics (Table~\ref{tab:ats-metrics}). This helps identify regions where the trade-off between
+    return and drawdown is favourable.
+
+    \item \textbf{Stability checks.} For promising parameter configurations, repeat backtests on
+    different time segments or different token universes to check whether performance is robust or
+    highly regime-dependent.
+
+    \item \textbf{Final selection and documentation.} Select a configuration that offers an acceptable
+    compromise between performance and risk, prioritising robustness over maximum historical return.
+    The chosen hyperparameters are recorded with a unique configuration identifier and committed to
+    version control.
+\end{enumerate}
+
+Throughout this workflow, emphasis is placed on avoiding overfitting: parameters are not tuned to
+optimise performance on a single historical period or set of tokens, but rather to exhibit reasonable
+behaviour across multiple scenarios.
+
+\subsubsection{Sensitivity and Ablation Analysis}
+
+Beyond tuning, the backtesting framework is used for sensitivity and ablation analyses that directly
+relate to the research questions. Examples include:
+
+\begin{itemize}
+    \item \textbf{Sensitivity to sentiment thresholds.} Examine how varying $R_{\text{block}}$ and
+    $s_{\min}^{-}$ affects the frequency with which sentiment vetoes coordinated tokens and how this
+    impacts overall performance and risk. This helps quantify the contribution of the sentiment
+    layer.
+
+    \item \textbf{Sensitivity to per-trade risk $R$.} Evaluate how different per-trade risk budgets
+    influence drawdown profiles and whether returns scale approximately linearly with risk, or whether
+    higher risk budgets disproportionately increase tail losses.
+
+    \item \textbf{Ablation of risk caps.} Temporarily relax or remove certain risk constraints
+    (e.g., $L_{\text{token}}$ or $D_{\max}$) to show how much they reduce drawdowns and whether they
+    significantly limit upside. This supports an argument that risk management is not merely an
+    implementation detail but a key part of the methodology.
+\end{itemize}
+
+The results of these analyses are presented in the Evaluation chapter, but their methodology is
+rooted in the configuration and backtesting design described here.
+
+\subsubsection{Configuration Management and Reproducibility}
+
+To ensure that experimental results can be reproduced and audited, all configurations are:
+
+\begin{itemize}
+    \item Stored as versioned configuration files (e.g., YAML) in the same repository as the code.
+    \item Tagged with human-readable identifiers (e.g., run IDs, scenario names) and referenced in
+          backtest logs and result tables.
+    \item Logged at runtime: each backtest or live run writes its effective configuration (including
+          defaulted and derived parameters) into a run-specific artefact directory.
+\end{itemize}
+
+Figure~\ref{fig:config-tuning-loop} provides a high-level overview of the configuration and tuning
+loop: candidate configurations are passed to the backtesting harness, which returns performance and
+risk metrics; these are then analysed to inform updated configuration choices, closing the loop.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\textwidth]{images/config-tuning-loop.png}
+    \caption{Configuration and tuning loop: candidate hyperparameter sets are evaluated via the backtesting framework; metrics and diagnostics guide adjustments to coordination, sentiment, policy, and risk parameters until a robust configuration is selected.}
+    \label{fig:config-tuning-loop}
+\end{figure}

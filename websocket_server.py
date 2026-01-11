@@ -17,6 +17,7 @@ from database import SessionLocal
 from auth import authenticate_wallet, register_synthetic_wallet
 
 SSE_ENDPOINT = "https://helius.sarislabs.com/stream/coordinated"
+# SSE_ENDPOINT = "http://localhost:5000/stream"
 
 # Multi-user state management
 USER_STATES = {}  # wallet_address -> APP_STATE
@@ -372,9 +373,11 @@ async def handle_new_ohlcv_candle(candle_dict, pair_address: str):
         if not strategy or not executor:
             continue
         
-        # Check for trade action
+        # Check for trade action - ALWAYS check strategy, not just when position exists
         bot_trade_event = None
-        if token_info['address'] in pm.positions:
+        position_exists = token_info['address'] in pm.positions and pm.positions[token_info['address']]['tokens'] > 0.0001
+        
+        if position_exists:
             action, sell_portion, reason = strategy.check_for_trade_action(current_price)
             if action == 'SELL':
                 remaining_tokens = pm.positions[token_info['address']]['tokens']

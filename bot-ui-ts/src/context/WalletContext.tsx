@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import type { User, AuthState } from '../types';
+import type { User, AuthState, WalletBalance } from '../types';
+import { fetchWalletBalance, executeBuy, executeSell, BuyRequest, SellRequest, TradeResponse } from '../services/api';
 
 interface WalletContextType extends AuthState {
   login: (walletAddress: string) => Promise<void>;
@@ -7,6 +8,9 @@ interface WalletContextType extends AuthState {
   logout: () => void;
   wsConnection: WebSocket | null;
   isWsConnected: boolean;
+  refreshBalance: () => Promise<void>;
+  performBuy: (request: BuyRequest) => Promise<TradeResponse>;
+  performSell: (request: SellRequest) => Promise<TradeResponse>;
 }
 
 const WalletContext = createContext<WalletContextType | undefined>(undefined);
@@ -31,6 +35,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
     isAuthenticated: false,
     user: null,
     walletAddress: null,
+    walletBalance: null,
   });
   const [wsConnection, setWsConnection] = useState<WebSocket | null>(null);
   const [isWsConnected, setIsWsConnected] = useState(false);
@@ -45,12 +50,67 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
             isAuthenticated: true,
             user,
             walletAddress: savedWallet,
+            walletBalance: null,
           });
           connectWebSocket(savedWallet);
+          // Fetch initial balance
+          refreshBalanceInternal();
         }
       });
     }
   }, []);
+
+  // Refresh balance periodically
+  useEffect(() => {
+    if (authState.isAuthenticated) {
+      const interval = setInterval(() => {
+        refreshBalanceInternal();
+      }, 30000); // Refresh every 30 seconds
+      
+      return () => clearInterval(interval);
+    }
+  }, [authState.isAuthenticated]);
+
+  const refreshBalanceInternal = async () => {
+    try {
+      const balance = await fetchWalletBalance();
+      
+      // Find SOL balance in the response
+      const solBalance = balance.balances.find(b => b.mint === 'SOL');
+      const currentBalance = solBalance?.uiAmount ?? 0;
+      
+      setAuthState(prev => {
+        // Store initial balance from API on first fetch (if not already stored)
+        let initialBalanceFromApi = prev.user?.initial_balance_from_api;
+        if (!initialBalanceFromApi && prev.walletAddress) {
+          const storedInitial = localStorage.getItem(`initial_balance_${prev.walletAddress}`);
+          if (!storedInitial) {
+            // First time fetching - store this as initial balance
+            initialBalanceFromApi = currentBalance;
+            localStorage.setItem(`initial_balance_${prev.walletAddress}`, currentBalance.toString());
+          } else {
+            initialBalanceFromApi = parseFloat(storedInitial);
+          }
+        }
+        
+        return {
+          ...prev,
+          walletBalance: balance,
+          user: prev.user ? {
+            ...prev.user,
+            current_balance: currentBalance,
+            initial_balance_from_api: initialBalanceFromApi,
+          } : null,
+        };
+      });
+    } catch (error) {
+      console.error('Failed to fetch balance:', error);
+    }
+  };
+
+  const refreshBalance = async () => {
+    await refreshBalanceInternal();
+  };
 
   const fetchUserData = async (walletAddress: string): Promise<User | null> => {
     try {
@@ -113,9 +173,12 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
           isAuthenticated: true,
           user,
           walletAddress,
+          walletBalance: null,
         });
         localStorage.setItem('wallet_address', walletAddress);
         connectWebSocket(walletAddress);
+        // Fetch initial balance
+        await refreshBalanceInternal();
       } else {
         throw new Error('Invalid wallet address');
       }
@@ -143,14 +206,41 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
           isAuthenticated: true,
           user,
           walletAddress: data.wallet_address,
+          walletBalance: null,
         });
         localStorage.setItem('wallet_address', data.wallet_address);
         connectWebSocket(data.wallet_address);
+        // Fetch initial balance
+        await refreshBalanceInternal();
       } else {
         throw new Error('Registration failed');
       }
     } catch (error) {
       console.error('Registration failed:', error);
+      throw error;
+    }
+  };
+
+  const performBuy = async (request: BuyRequest): Promise<TradeResponse> => {
+    try {
+      const result = await executeBuy(request);
+      // Refresh balance after trade
+      await refreshBalanceInternal();
+      return result;
+    } catch (error) {
+      console.error('Buy failed:', error);
+      throw error;
+    }
+  };
+
+  const performSell = async (request: SellRequest): Promise<TradeResponse> => {
+    try {
+      const result = await executeSell(request);
+      // Refresh balance after trade
+      await refreshBalanceInternal();
+      return result;
+    } catch (error) {
+      console.error('Sell failed:', error);
       throw error;
     }
   };
@@ -163,6 +253,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
       isAuthenticated: false,
       user: null,
       walletAddress: null,
+      walletBalance: null,
     });
     setWsConnection(null);
     setIsWsConnected(false);
@@ -178,6 +269,9 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         logout,
         wsConnection,
         isWsConnected,
+        refreshBalance,
+        performBuy,
+        performSell,
       }}
     >
       {children}
