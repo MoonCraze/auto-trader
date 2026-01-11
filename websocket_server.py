@@ -16,7 +16,7 @@ from sentiment_analyzer import check_sentiment
 from database import SessionLocal
 from auth import authenticate_wallet, register_synthetic_wallet
 
-SSE_ENDPOINT = "http://localhost:5000/stream"
+SSE_ENDPOINT = "https://helius.sarislabs.com/stream/coordinated"
 
 # Multi-user state management
 USER_STATES = {}  # wallet_address -> APP_STATE
@@ -511,7 +511,8 @@ async def process_sentiment_queue(raw_queue: asyncio.Queue, trade_queue: asyncio
                 'status': 'Screening',
                 'pnl': 0.0,
                 'sentiment_score': None,
-                'mention_count': None
+                'mention_count': None,
+                'sentiment_data': None
             }
             APP_STATE["trade_summaries"].append(new_summary)
             APP_STATE["processed_tokens"].add(token_info['address'])
@@ -550,9 +551,20 @@ async def process_trade_queue(trade_queue: asyncio.Queue):
                 if 'token_name' in sentiment_result:
                     token_info['symbol'] = sentiment_result['token_name']
                     summary_to_update['token']['symbol'] = sentiment_result['token_name']
+                
+                # Prepare sentiment data for UI
+                raw_data = sentiment_result.get('raw_data', {})
+                sentiment_data = {
+                    'score': sentiment_result['score'],
+                    'twitter_details': raw_data.get('twitter_details'),
+                    'twitter_texts': raw_data.get('raw', {}).get('twitter_texts'),
+                    'sample_texts': raw_data.get('sample_texts')
+                }
+                
                 summary_to_update['status'] = 'Pending'
                 summary_to_update['sentiment_score'] = sentiment_result['score']
                 summary_to_update['mention_count'] = sentiment_result.get('mentions')
+                summary_to_update['sentiment_data'] = sentiment_data
                 index = APP_STATE["trade_summaries"].index(summary_to_update)
                 await broadcast_to_user(wallet_address, json.dumps({'type': 'TRADE_SUMMARY_UPDATE', 'data': {'summaries': APP_STATE["trade_summaries"]}}))
 

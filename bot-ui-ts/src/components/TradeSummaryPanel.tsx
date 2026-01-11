@@ -1,5 +1,6 @@
 import React from 'react';
 import { TradeSummary } from '../types';
+import SentimentDisplay from './SentimentDisplay';
 
 interface TradeSummaryPanelProps {
     summaries: TradeSummary[];
@@ -19,13 +20,6 @@ const TradeSummaryPanel: React.FC<TradeSummaryPanelProps> = ({ summaries, active
             case 'Failed': return `${baseClasses} bg-red-800 text-red-200 opacity-60`;
         }
     };
-
-    const getSentimentColor = (score: number | null) => {
-        if (score === null) return 'text-gray-500';
-        if (score > 75) return 'text-green-400';
-        if (score > 60) return 'text-yellow-400';
-        return 'text-red-400';
-    }
 
     return (
         <div className="h-full overflow-y-auto pr-1 themed-scrollbar">
@@ -54,15 +48,12 @@ const TradeSummaryPanel: React.FC<TradeSummaryPanelProps> = ({ summaries, active
                         </div>
                         <p className="text-xs text-gray-500 font-mono truncate">{summary.token.address}</p>
                         
-                        {/* <<< NEW: Sentiment Score Display --- */}
-                        {summary.sentiment_score !== null && (
-                             <div className="text-xs mt-2 pt-2 border-t border-gray-700/50 flex justify-between items-center">
-                                <span className="text-gray-400">Sentiment:</span>
-                                <span className={`font-mono font-semibold ${getSentimentColor(summary.sentiment_score)}`}>
-                                    {summary.sentiment_score.toFixed(0)}%
-                                    <span className="text-gray-500 font-normal"> ({summary.mention_count} mentions)</span>
-                                </span>
-                            </div>
+                        {/* Sentiment Display with detailed breakdown */}
+                        {summary.sentiment_data && (
+                            <SentimentDisplay 
+                                sentimentData={summary.sentiment_data}
+                                mentionCount={summary.mention_count}
+                            />
                         )}
 
                         {summary.status === 'Finished' && (
