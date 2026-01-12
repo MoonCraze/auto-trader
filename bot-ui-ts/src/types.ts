@@ -46,6 +46,29 @@ export interface VolumeData {
 export interface TokenInfo {
     address: string;
     symbol: string;
+    logo_url?: string;
+}
+
+export interface TwitterDetails {
+  pos: number;
+  neg: number;
+  total: number;
+  pos_pct: number;
+  neg_pct: number;
+  shrunk_sentiment: number;
+}
+
+export interface SentimentText {
+  text: string;
+  sentiment: 'positive' | 'neutral' | 'negative';
+  color: string;
+}
+
+export interface SentimentData {
+  score: number;
+  twitter_details?: TwitterDetails;
+  twitter_texts?: string[];
+  sample_texts?: SentimentText[];
 }
 
 export interface TradeSummary {
@@ -54,7 +77,9 @@ export interface TradeSummary {
   pnl: number;
   sentiment_score: number | null;
   mention_count: number | null;
+  sentiment_data?: SentimentData;
 }
+
 
 export interface StrategyState {
     entry_price: number;

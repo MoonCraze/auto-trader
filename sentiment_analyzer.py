@@ -1,9 +1,8 @@
 import aiohttp
 import asyncio
 
-
 SENTIMENT_ENDPOINT_URL = "https://aryan-spectrochemical-transperitoneally.ngrok-free.dev/rag/explain"
-TOKEN_INFO_ENDPOINT = "https://special-robot-g4w6xrqq5jpx29vq6-5000.app.github.dev/token"
+TOKEN_INFO_ENDPOINT = "https://orange-happiness-v6vgw754rp4p3prjp-5000.app.github.dev/token"
 MAX_RETRIES = 3
 INITIAL_RETRY_DELAY = 5
 
@@ -24,17 +23,17 @@ async def check_sentiment(token_address: str, token_symbol: str = None) -> dict 
     # First, fetch the token symbol from the token info endpoint
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(f"{TOKEN_INFO_ENDPOINT}/{token_address}", timeout=10) as response:
+            async with session.get(f"{TOKEN_INFO_ENDPOINT}/{token_address}", timeout=30) as response:
                 if response.status == 200:
                     token_data = await response.json()
-                    token_name = token_data.get('symbol', "PEPOL")
+                    token_name = token_data.get('symbol', "SENTIMENT_NA")
                     print(f"[{display_name}] Resolved token name: {token_name.split()[0]}")
                 else:
                     print(f"[{display_name}] Failed to fetch token info, using address instead.")
                     token_name = token_address
     except Exception as e:
         print(f"[{display_name}] Error fetching token info: {e}, using address instead.")
-        token_name = "PEPOL"
+        token_name = "TOKEN_NA"
     
     params = {'coin': "$"+token_name, 'max_results': 300}
     
@@ -43,7 +42,7 @@ async def check_sentiment(token_address: str, token_symbol: str = None) -> dict 
         
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(SENTIMENT_ENDPOINT_URL, params=params, timeout=60) as response:
+                async with session.get(SENTIMENT_ENDPOINT_URL, params=params, timeout=70) as response:
                     if response.status == 200:
                         data = await response.json()
                         

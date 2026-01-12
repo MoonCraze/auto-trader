@@ -16,8 +16,8 @@ from sentiment_analyzer import check_sentiment
 from database import SessionLocal
 from auth import authenticate_wallet, register_synthetic_wallet
 
-# SSE_ENDPOINT = "https://helius.sarislabs.com/stream/coordinated"
-SSE_ENDPOINT = "http://localhost:5000/stream"
+SSE_ENDPOINT = "https://helius.sarislabs.com/stream/coordinated"
+# SSE_ENDPOINT = "http://localhost:5000/stream"
 
 # Multi-user state management
 USER_STATES = {}  # wallet_address -> APP_STATE
@@ -297,20 +297,26 @@ async def listen_for_tokens(raw_queue: asyncio.Queue, metadata: TokenMetadata):
                                 if token_address:
                                     # Fetch the actual token name from the API
                                     symbol = token_address[:4] + "..." + token_address[-4:]  # Default fallback
+                                    logo_url = ""
                                     try:
                                         async with aiohttp.ClientSession() as token_session:
-                                            token_endpoint = "https://special-robot-g4w6xrqq5jpx29vq6-5000.app.github.dev/token"
-                                            async with token_session.get(f"{token_endpoint}/{token_address}", timeout=10) as token_response:
+                                            token_endpoint = "https://orange-happiness-v6vgw754rp4p3prjp-5000.app.github.dev/token"
+                                            async with token_session.get(f"{token_endpoint}/{token_address}", timeout=15) as token_response:
                                                 if token_response.status == 200:
                                                     content_type = token_response.headers.get('Content-Type', '')
                                                     if 'application/json' in content_type:
                                                         token_data = await token_response.json()
                                                         symbol = token_data.get('symbol', symbol)
+                                                        logo_url = token_data.get('logo_url', '')
                                                         print(f"Resolved token name: {symbol}")
                                     except Exception as e:
-                                        print(f"Could not fetch token name for {token_address}: {e}")
+                                        print(f"Could not fetch token name for {token_address}: {e}", )
                                     
-                                    token_info = {"address": token_address, "symbol": symbol}
+                                    # Also try to get logo from metadata if API doesn't provide it
+                                    if not logo_url:
+                                        logo_url = metadata.get_logo_url(token_address)
+                                    
+                                    token_info = {"address": token_address, "symbol": symbol, "logo_url": logo_url}
                                     print(f"Raw signal received for {symbol}. Pushing to screening queue.")
                                     await raw_queue.put(token_info)
                             except json.JSONDecodeError: pass
@@ -345,7 +351,8 @@ async def process_sentiment_queue(raw_queue: asyncio.Queue, trade_queue: asyncio
                 'status': 'Screening',
                 'pnl': 0.0,
                 'sentiment_score': None,
-                'mention_count': None
+                'mention_count': None,
+                'sentiment_data': None
             }
             APP_STATE["trade_summaries"].append(new_summary)
             APP_STATE["processed_tokens"].add(token_info['address'])
@@ -378,14 +385,26 @@ async def process_trade_queue(trade_queue: asyncio.Queue):
 
             # Run sentiment just-in-time
             sentiment_result = await check_sentiment(token_info['address'], token_info['symbol'])
+            # sentiment_result = {'score': 70, 'mentions': random.randint(0, 500), 'token_name': token_info['symbol']}
 
             if sentiment_result and sentiment_result.get('score', 0) > 60:
                 if 'token_name' in sentiment_result:
                     token_info['symbol'] = sentiment_result['token_name']
                     summary_to_update['token']['symbol'] = sentiment_result['token_name']
+                
+                # Prepare sentiment data for UI
+                raw_data = sentiment_result.get('raw_data', {})
+                sentiment_data = {
+                    'score': sentiment_result['score'],
+                    'twitter_details': raw_data.get('twitter_details'),
+                    'twitter_texts': raw_data.get('raw', {}).get('twitter_texts'),
+                    'sample_texts': raw_data.get('sample_texts')
+                }
+                
                 summary_to_update['status'] = 'Pending'
                 summary_to_update['sentiment_score'] = sentiment_result['score']
                 summary_to_update['mention_count'] = sentiment_result.get('mentions')
+                summary_to_update['sentiment_data'] = sentiment_data
                 index = APP_STATE["trade_summaries"].index(summary_to_update)
                 await broadcast_to_user(wallet_address, json.dumps({'type': 'TRADE_SUMMARY_UPDATE', 'data': {'summaries': APP_STATE["trade_summaries"]}}))
 
