@@ -1,16 +1,45 @@
-# 🚀 Auto Trader Bot - Multi-User Trading Platform
+#  Auto Trader Bot - Multi-User Trading Platform
 
 A sophisticated autonomous cryptocurrency trading bot with multi-user support, real-time analytics, and comprehensive trade tracking. Built with Python, React, TypeScript, and WebSocket for real-time communication.
 
+**Demo Video:** https://www.youtube.com/watch?v=VqvUTF7BMhM
+
+![Auto Trader Bot Demo](<./bot-ui-ts/public/demo.png>)
+
+---
+
+## 📋 Table of Contents
+
+- [Features](#-features)
+- [Architecture](#-architecture)
+  - [Backend Components](#backend-components-python)
+  - [Frontend Components](#frontend-components-react--typescript)
+- [Quick Start](#-quick-start)
+  - [Prerequisites](#prerequisites)
+  - [Installation](#installation)
+  - [Running the Application](#running-the-application)
+- [Demo Accounts](#-demo-accounts)
+- [API Reference](#-api-reference)
+  - [REST API Endpoints](#rest-api-endpoints)
+  - [WebSocket Protocol](#websocket-protocol)
+- [Project Structure](#-project-structure)
+- [Database Schema](#-database-schema)
+- [Configuration](#-configuration)
+- [Technology Stack](#-technology-stack)
+- [Documentation](#-documentation)
+- [Contributing](#-contributing)
+
+---
+
 ## ✨ Features
 
-### 🔐 **Authentication System**
+### **Authentication System**
 - Synthetic wallet generation with random SOL balance (10-20 SOL)
 - Secure login/registration flow
 - Session persistence
 - Multi-user support with isolated trading sessions
 
-### 📊 **Trading Dashboard**
+### **Trading Dashboard**
 - Real-time candlestick charts with strategy overlays
 - Live trade execution and monitoring
 - Portfolio tracking with P&L calculations
@@ -18,7 +47,7 @@ A sophisticated autonomous cryptocurrency trading bot with multi-user support, r
 - Bot trade history
 - Strategy parameter visualization (stop-loss, take-profit tiers)
 
-### 👤 **Profile/Wallet Page**
+### **Profile/Wallet Page**
 Comprehensive analytics dashboard with three sections:
 
 #### **Overview**
@@ -48,13 +77,13 @@ Comprehensive analytics dashboard with three sections:
 - Automatic sentiment analysis
 - Dynamic strategy adjustments
 
-### 💾 **Data Persistence**
+### **Data Persistence**
 - SQLite database with comprehensive schema
 - Historical trade tracking
 - Portfolio snapshots
 - Position management
 
-## 🏗️ Architecture
+## Architecture
 
 ### **Backend (Python)**
 - `websocket_server.py` - Multi-user WebSocket server with per-user state
@@ -74,7 +103,7 @@ Comprehensive analytics dashboard with three sections:
 - `CandlestickChart.tsx` - Real-time trading charts
 - `TradeSummaryPanel.tsx` - Trade queue visualization
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 - Python 3.8+
@@ -141,7 +170,7 @@ Three demo accounts are pre-created:
 
 See `DEMO_WALLETS.md` for quick reference.
 
-## 📡 API Endpoints
+## API Endpoints
 
 ### Authentication
 - `POST /api/register` - Create new synthetic wallet
@@ -157,7 +186,7 @@ See `DEMO_WALLETS.md` for quick reference.
 - `GET /api/analytics/{wallet_address}/by-token` - Per-token analytics
 - `GET /api/portfolio/history/{wallet_address}` - Portfolio history
 
-## 🔌 WebSocket Protocol
+## WebSocket Protocol
 
 **Client Authentication:**
 ```json
@@ -179,7 +208,7 @@ See `DEMO_WALLETS.md` for quick reference.
 }
 ```
 
-## 📁 Project Structure
+# Project Structure
 
 ```
 auto-trader/
@@ -213,14 +242,14 @@ auto-trader/
 └── README.md
 ```
 
-## 🗄️ Database Schema
+## Database Schema
 
 - **users**: Wallet addresses, balances, creation dates
 - **trades**: Complete trade lifecycle with entry/exit data
 - **positions**: Current open positions per user
 - **portfolio_snapshots**: Historical portfolio values
 
-## ⚙️ Configuration
+## Configuration
 
 Edit `config.py` to customize:
 - Initial capital and risk parameters
@@ -229,13 +258,7 @@ Edit `config.py` to customize:
 - Database connection
 - Wallet generation ranges
 
-## 📚 Documentation
-
-- `SETUP_GUIDE.md` - Detailed setup instructions
-- `IMPLEMENTATION_SUMMARY.md` - Technical implementation details
-- `DEMO_WALLETS.md` - Quick reference for demo accounts
-
-## 🔧 Tech Stack
+## Tech Stack
 
 **Backend:**
 - Python 3.8+
@@ -256,29 +279,6 @@ Edit `config.py` to customize:
 - SQLite (development)
 - PostgreSQL-ready schema
 
-## 🛣️ Roadmap
-
-- [ ] Portfolio value charts over time
-- [ ] Trade export (CSV/JSON)
-- [ ] Advanced filtering (date range, multi-token)
-- [ ] Real-time profile updates via WebSocket
-- [ ] Email notifications
-- [ ] Custom strategy parameters per user
-- [ ] Mobile responsive design
-- [ ] Dark/light theme toggle
-
-## 🤝 Contributing
+## Contributing
 
 This is an academic project (FYP). Contributions and suggestions are welcome!
-
-## 📄 License
-
-Academic/Educational Use
-
-## 👨‍💻 Author
-
-Final Year Project - Semester 8
-
----
-
-**Built with ❤️ for autonomous cryptocurrency trading**
