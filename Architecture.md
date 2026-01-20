@@ -11,7 +11,7 @@ The Auto Trader Bot is a sophisticated multi-user cryptocurrency trading platfor
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                      Client Layer                           │
-│  (React + TypeScript + WebSocket Client + REST Client)     │
+│  (React + TypeScript + WebSocket Client + REST Client)      │
 └─────────────────────┬───────────────────────────────────────┘
                       │
         ┌─────────────┼──────────────┐
